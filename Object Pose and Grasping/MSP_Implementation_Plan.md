@@ -1,6 +1,6 @@
-# MSP V5 - Complete Implementation Blueprint
+# MSP - Complete Implementation Blueprint
 
-This document specifies the complete file-by-file blueprint for the Manipulation-Sufficient Perception (MSP V5) repository. Modeled after enterprise-grade research frameworks like Detectron2 and OpenVLA, this blueprint enforces a strict registry pattern, clear abstraction boundaries, and a scalable hierarchy.
+This document specifies the complete file-by-file blueprint for the Manipulation-Sufficient Perception (MSP) repository. Modeled after enterprise-grade research frameworks like Detectron2 and OpenVLA, this blueprint enforces a strict registry pattern, clear abstraction boundaries, and a scalable hierarchy.
 
 ---
 

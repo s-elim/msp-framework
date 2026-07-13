@@ -1,10 +1,10 @@
-# Manipulation-Sufficient Perception (MSP) V5
+# Manipulation-Sufficient Perception (MSP)
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**MSP V5** is a state-of-the-art framework for robotic object pose estimation and grasping. Instead of relying on rigid, metric 3D reconstructions, MSP operates via **Manipulation-Sufficient Perception**. It leverages an Information Bottleneck approach to extract only the sufficient statistics required to guarantee physical success, discarding task-irrelevant metric details.
+**MSP** is a state-of-the-art framework for robotic object pose estimation and grasping. Instead of relying on rigid, metric 3D reconstructions, MSP operates via **Manipulation-Sufficient Perception**. It leverages an Information Bottleneck approach to extract only the sufficient statistics required to guarantee physical success, discarding task-irrelevant metric details.
 
 This repository is designed to be highly modular, scalable, and research-friendly, comparable to frameworks like Detectron2 and OpenVLA.
 
@@ -70,7 +70,7 @@ The framework is driven by execution scripts in the `scripts/` directory.
 
 ## 📚 Documentation
 
-For a comprehensive guide on running training loops, overriding Hydra configurations, interpreting Weights & Biases logs, and extending the framework with custom backbones, please refer to the [**MSP V5 Cookbook**](./cookbook.md).
+For a comprehensive guide on running training loops, overriding Hydra configurations, interpreting Weights & Biases logs, and extending the framework with custom backbones, please refer to the [**MSP Cookbook**](./cookbook.md).
 
 For theoretical underpinnings and complete mathematical formalization, see the original architecture documentation in the `Object Pose and Grasping` directory.
 

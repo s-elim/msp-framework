@@ -1,12 +1,12 @@
-# Manipulation-Sufficient Perception (MSP V5) - Software Architecture Design
+# Manipulation-Sufficient Perception (MSP) - Software Architecture Design
 
-This document outlines the software architecture for the MSP V5 research framework. The design prioritizes modularity, scalability, and reusability, allowing future researchers to swap backbones, outcome parameterizations, physics simulators, and calibration methods without touching the core logic.
+This document outlines the software architecture for the MSP research framework. The design prioritizes modularity, scalability, and reusability, allowing future researchers to swap backbones, outcome parameterizations, physics simulators, and calibration methods without touching the core logic.
 
 ---
 
 ## STEP 1: Logical Components
 
-Based on the MSP V5 formalization, the system breaks down into the following logical components:
+Based on the MSP formalization, the system breaks down into the following logical components:
 
 **Data & Simulation**
 *   **Dataset / Dataloader:** Handles loading offline observations, actions, and physics outcomes.

@@ -1,6 +1,6 @@
-# MSP V5 Cookbook
+# MSP Cookbook
 
-This cookbook provides practical instructions on how to use the Manipulation-Sufficient Perception (MSP) V5 framework. It covers environment setup, training, evaluation, and test-time adaptation (TTA).
+This cookbook provides practical instructions on how to use the Manipulation-Sufficient Perception (MSP) framework. It covers environment setup, training, evaluation, and test-time adaptation (TTA).
 
 ---
 
