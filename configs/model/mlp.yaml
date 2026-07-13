@@ -1,0 +1,4 @@
+backbone: mlp     # mlp | resnet
+latent_dim: 16    # d -- the dimension of the sufficient statistic
+hidden: 256
+gripper_dim: 0    # >0 conditions p_psi on the embodiment (V2 Change 2, cross-embodiment)

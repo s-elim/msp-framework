@@ -1,0 +1,9 @@
+n_train: 20000
+n_val: 2000
+n_calib: 4000     # MUST be disjoint from train (Assumption A5); the calibrator enforces it.
+n_test: 4000
+n_actions: 16
+obs_dim: 32
+boundary_focus: 0.0   # >0 oversamples near the outcome decision surface; weights debias it.
+batch_size: 256
+num_workers: 4

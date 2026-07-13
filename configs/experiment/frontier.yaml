@@ -1,0 +1,11 @@
+# @package _global_
+# The rate-distortion frontier sweep (V2 Change 6): the minimality evidence.
+defaults:
+  - override /train: default
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      train.beta.succ: 0.1,0.5,1,2,5,10,20,50,100
+      train.beta.margin: 0.1,0.5,1,2,5,10,20,50,100
+      train.beta.slip: 0.1,0.5,1,2,5,10,20,50,100

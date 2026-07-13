@@ -1,0 +1,5 @@
+backbone: resnet
+latent_dim: 64
+hidden: 512
+pretrained: true
+gripper_dim: 0

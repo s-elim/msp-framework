@@ -1,0 +1,15 @@
+epochs: 40
+lr: 3.0e-3
+weight_decay: 1.0e-4
+warmup_epochs: 2
+grad_clip: 1.0
+amp_dtype: bf16      # bf16 | fp16 | off.  bf16 needs no GradScaler and has the range the
+                     # Gaussian NLL wants; fp16 exp(-logvar) overflows readily.
+# BETA MULTIPLIES DISTORTION (Eq 7 per-dimension form).
+#   beta -> inf  =>  sufficiency   (Theorem 3)
+#   beta -> 0    =>  compression
+# The audited code had this INVERTED. Do not "fix" it back.
+beta:
+  succ: 20.0
+  margin: 20.0
+  slip: 20.0
