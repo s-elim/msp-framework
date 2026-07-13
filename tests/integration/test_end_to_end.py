@@ -214,13 +214,18 @@ def test_engine_acts_when_something_is_certified(calibrated) -> None:
     scored = engine.score(engine.perceive(obs), actions)
 
     decisions = [engine.select(scored, i) for i in range(8)]
-    acted = [d for d in decisions if isinstance(d, ActionChoice)]
+    acted = [(i, d) for i, d in enumerate(decisions) if isinstance(d, ActionChoice)]
     assert len(acted) > 0, "the model should certify at least one action on some scene"
 
-    for d in acted:
-        certified = engine.calibrator.certified_mask(scored.stats.s[:1])[0]
-        assert certified[d.index] or True  # index is within the certified set by construction
+    mask = engine.calibrator.certified_mask(scored.stats.s)  # (B, Na)
+    for i, d in acted:
+        assert bool(mask[i, d.index]), (
+            f"scene {i}: selected action {d.index} is OUTSIDE the certified set"
+        )
         assert 0.0 <= d.success_prob <= 1.0
+        # The chosen action must maximize (s - lambda*v) WITHIN the certified set.
+        allowed = scored.scores[i].masked_fill(~mask[i], float("-inf"))
+        assert d.index == int(allowed.argmax()), "Eq 15 argmax was not taken over A_cert"
 
 
 def test_selected_action_is_always_inside_the_certified_set(calibrated) -> None:
