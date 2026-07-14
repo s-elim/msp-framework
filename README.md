@@ -25,6 +25,26 @@ code and passes against this one.
 
 ---
 
+## The experiment: RGB-D grasping
+
+The observation is a **rendered RGB-D image**, the labels come from **MuJoCo rigid-body rollouts**,
+and the grasp quality comes from a **differentiable Ferrari-Canny** wrench-space metric.
+
+```bash
+MUJOCO_GL=egl python scripts/train.py data=rgbd model=resnet
+```
+
+Corpus generation is cached: ~2 ms/frame to render, ~10 ms/grasp to roll out, so a 20k-scene corpus
+is a few minutes and is never regenerated.
+
+**What the camera can and cannot see.** It sees the object's pose and size. It does **not** see
+friction, mass, or the centre of mass -- and those three decide slip and torque failure. Two scenes
+differing only in them render *identically* and yet grasp *differently*
+(`tests/data/test_rgbd.py::test_the_camera_cannot_see_friction_mass_or_centre_of_mass`).
+
+That is the entire point. A pose estimator cannot even represent that ignorance. MSP's belief can,
+its certificate abstains on it, and active touch (Eq 20/21) is what resolves it.
+
 ## Quick start
 
 ```bash
@@ -149,14 +169,15 @@ and any β sweep would have traced the frontier backwards.
 - **`DiagonalGaussianBelief` is unimodal.** Theorem 5 requires the belief on a symmetric object to
   be supported on a *group orbit*. A mixture or flow posterior is needed there; the `Belief` ABC
   exists so it can be dropped in without touching anything else.
-- **The MuJoCo tier runs but is NOT validated.** `MuJoCoOracle` produces non-degenerate outcomes
-  (25% success, 9 ms/rollout), but a *successfully lifted* object still translates ~0.10 m relative
-  to the hand, which a rigidly-carried object should not. That failure is pinned as a strict `xfail`
-  in `tests/oracle/test_mujoco.py` rather than hidden. **Do not produce a paper number from it until
-  that test passes.**
 - **Tier 3 does not exist.** A residual fit to a few thousand *real* robot grasp outcomes is the
-  tier your reviewers say carries the paper. It is deliberately absent rather than stubbed, because
-  a stub would let someone believe the grounding exists.
+  tier the reviewers say carries the paper. It is deliberately absent rather than stubbed, because a
+  stub would let someone believe the grounding exists. **Nothing here transfers to a real robot yet.**
+- **No real object meshes.** Boxes and cylinders only. YCB / GraspNet-1Billion is the next step.
+- **No baselines.** AnyGrasp, Contact-GraspNet, FoundationPose+sampling are all unimplemented.
+- **No pose readout.** Per the thesis you should not *estimate* pose, but the honest max-entropy
+  readout (§10) is what would demonstrate that readout error concentrates in `ker J(x)` -- the
+  Corollary, and the claim that makes "ADD-S misranks methods" land. It is not built.
+- **Active perception is not wired.** Eq 17/18 need a rendered look-ahead for `IG_true`.
 - **Theorem 4 is vacuous for a generic box.** `rank J(x) = d_X`, so nothing is continuously
   unidentifiable: pose, size, friction, mass and COM all change some outcome. The theorem has content
   only for objects with a genuine outcome-invariance — a **cylinder**, where rotation about the
