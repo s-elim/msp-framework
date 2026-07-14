@@ -1,0 +1,12 @@
+# @package _global_
+# The rate-distortion frontier (V2 Change 6): the minimality evidence.
+#
+#     python scripts/train.py --multirun +experiment=frontier
+#
+# ONE key is swept, so this is 8 runs. Sweeping beta.succ/margin/slip separately would make
+# Hydra's basic sweeper take the cross product: 8^3 = 512 jobs. That bug shipped once.
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      train.beta_uniform: 0.5,1,2,5,10,20,50,100

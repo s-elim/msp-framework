@@ -336,7 +336,14 @@ loop:
      continue loop
 
   # calibrated feasibility (Eq. 23-24)
-  A_cert = { a : s[a] >= 1 - q_hat }                          # certified-success set
+  # The prediction set must be the SINGLETON {1}: label 1 in the set AND label 0 out of it.
+  # Testing only `s[a] >= 1 - q_hat` checks the first condition alone, and therefore certifies
+  # any action whose set is the AMBIGUOUS {0,1}. At a realistic q_hat ~ 0.68 that is the whole
+  # band 1 - q_hat <= s <= q_hat, i.e. every action from s = 0.32 to s = 0.68 -- including a
+  # coin flip. This line previously read `A_cert = { a : s[a] >= 1 - q_hat }` and the reference
+  # implementation faithfully reproduced it. It is a fail-open certificate. Corrected below.
+  score_1 = 1 - s[a];  score_0 = s[a]                         # Eq. 23
+  A_cert = { a : score_1 <= q_hat  AND  score_0 > q_hat }     # C(o,a) == {1}, Eq. 24
   if A_cert is empty: return ABSTAIN
 
   a* = argmax_{a in A_cert} ( s[a] - lambda * v[a] )          # Eq. 15

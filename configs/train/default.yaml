@@ -1,0 +1,26 @@
+epochs: 40
+lr: 3.0e-3
+weight_decay: 1.0e-4
+warmup_epochs: 2
+grad_clip: 1.0
+compile: false
+
+# bf16 | fp16 | off.  The NETWORK runs in this dtype; the LOSS is always computed in fp32,
+# because the rate and distortion are plotted on the paper's frontier and bf16 carries only
+# ~2-3 decimal digits. See engine/trainer.py.
+amp_dtype: bf16
+
+# THE SUFFICIENCY BUDGET.  beta MULTIPLIES the distortion (Eq 7, per-dimension form):
+#     L = sum_j beta_j * D_j  +  R
+#     beta -> inf  =>  sufficiency   (Theorem 3)
+#     beta -> 0    =>  compression
+# The audited implementation had this INVERTED (L = sum D_j/beta_j + R). Do not "fix" it back.
+#
+# `beta_uniform` sets all three at once. It exists so that a Hydra sweep over the sufficiency
+# budget is a 1-D sweep. Sweeping beta.succ, beta.margin and beta.slip as three separate keys
+# makes the basic sweeper take their CROSS PRODUCT -- 9 values each is 729 runs, not 9.
+beta_uniform: 20.0
+beta:
+  succ: ${train.beta_uniform}
+  margin: ${train.beta_uniform}
+  slip: ${train.beta_uniform}

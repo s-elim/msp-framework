@@ -1,0 +1,16 @@
+# Root Hydra config. Compose with: python scripts/train.py model.latent_dim=32 train.beta=10
+defaults:
+  - oracle: synthetic
+  - data: synthetic
+  - model: mlp
+  - train: default
+  - calibration: default
+  - _self_
+
+seed: 0
+device: cuda
+out_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+hydra:
+  run:
+    dir: ${out_dir}

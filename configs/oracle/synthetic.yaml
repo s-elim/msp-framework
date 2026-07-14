@@ -1,0 +1,8 @@
+# The physics kernel M. Sufficiency is defined RELATIVE to this object -- if it is wrong,
+# every number in the paper measures the wrong thing.
+_target_: msp.oracle.SyntheticOracle
+state_dim: 6
+rank: 3          # rank(P). dim ker J(x) = state_dim - rank = the unidentifiable subspace.
+action_dim: 7
+seed: 0
+noise: true

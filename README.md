@@ -1,84 +1,170 @@
 # Manipulation-Sufficient Perception (MSP)
 
-![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+Perception for manipulation, formulated as estimating a calibrated belief over the **minimal
+statistic that preserves all and only the information that changes action outcomes** — not an
+accurate pose.
 
-**MSP** is a state-of-the-art framework for robotic object pose estimation and grasping. Instead of relying on rigid, metric 3D reconstructions, MSP operates via **Manipulation-Sufficient Perception**. It leverages an Information Bottleneck approach to extract only the sufficient statistics required to guarantee physical success, discarding task-irrelevant metric details.
-
-This repository is designed to be highly modular, scalable, and research-friendly, comparable to frameworks like Detectron2 and OpenVLA.
-
----
-
-## 🌟 Key Features
-
-*   **Variational Information Bottleneck (VIB):** Dynamically trades off state-compression rate with physical distortion outcomes (success, slip, margin) using custom loss formulations.
-*   **Active Perception (Next-Best-View):** Amortized Value of Information (VoI) estimation to actively move the camera when epistemic uncertainty is high.
-*   **Conformal Calibration:** Guarantees strict, distribution-free statistical bounds on execution success via Split Conformal Prediction and Adaptive Conformal Inference (ACI).
-*   **Test-Time Adaptation (TTA):** Real-time belief updating via trust-region gradient descent following physical probe outcomes.
-*   **Modular Architecture:** Swap out Backbones, Outcome Heads, and Physics Simulators effortlessly using the `@REGISTRY` pattern.
+Two world states are equivalent when every admissible action produces the same outcome
+distribution. Geometry is recoverable only up to that equivalence, and accuracy beyond the
+sufficiency resolution is both unrecoverable and unnecessary. Grasp selection, distribution-free
+abstention, active perception, and test-time adaptation all fall out of **two learned modules** as
+inference procedures. No reconstruction, no dynamics rollout, no RL.
 
 ---
 
-## 📂 Repository Structure
+## Status
 
-The codebase is strictly separated by logical concerns:
+Rebuilt from the mathematics up. The previous implementation was audited equation by equation;
+of the 23 equations carrying an implementation obligation, 7 were correct. Six were *incorrect* —
+present, running, producing plausible numbers, silently violating the theorem they instantiated.
 
-```text
-msp_framework/
-├── msp/
-│   ├── core/         # VIB loss, Conformal calibration, TTA, Active Perception
-│   ├── models/       # Encoders, Outcome Heads, and Vision Backbones
-│   ├── data/         # Offline datasets, DataLoaders, and Augmentations
-│   ├── physics/      # Physics Oracle (PyBullet/MuJoCo) & Action Samplers
-│   ├── engine/       # PyTorch Trainer and Evaluator orchestrators
-│   └── utils/        # Registries, deterministic seeders, and unified Loggers
-├── scripts/          # Execution entry points (train.py, evaluate.py, deploy.py)
-├── configs/          # Hydra YAML configurations (planned)
-├── cookbook.md       # Detailed usage and training instructions
-└── README.md         # This file
-```
+This tree keeps the formalization, the hypothesis, and the algorithms. Everything else is new.
+
+**70 tests pass.** Every audited defect has a named regression test that fails against the old
+code and passes against this one.
 
 ---
 
-## 🚀 Quick Start
-
-### Installation
+## Quick start
 
 ```bash
-git clone https://github.com/s-elim/msp-framework.git
-cd msp-framework
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,sim,log]"
 
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install core dependencies
-pip install torch torchvision torchaudio
-pip install hydra-core wandb numpy h5py scipy
+pytest                                          # 70 tests, ~10s, no GPU needed
+python scripts/train.py                         # train + calibrate + evaluate
+python scripts/train.py train.beta.succ=50 model.latent_dim=32
+python scripts/deploy.py checkpoint=outputs/.../best.pth   # Algorithm 2, closed loop
 ```
 
-### Usage
+Reproduce every number and figure in the paper:
 
-The framework is driven by execution scripts in the `scripts/` directory.
-
-*   **Train the model:** `python scripts/train.py`
-*   **Evaluate coverage bounds:** `python scripts/evaluate.py`
-*   **Run interactive deployment:** `python scripts/deploy.py`
-
----
-
-## 📚 Documentation
-
-For a comprehensive guide on running training loops, overriding Hydra configurations, interpreting Weights & Biases logs, and extending the framework with custom backbones, please refer to the [**MSP Cookbook**](./cookbook.md).
-
-For theoretical underpinnings and complete mathematical formalization, see the original architecture documentation in the `Object Pose and Grasping` directory.
+```bash
+python scripts/paper/run_experiments.py --out results/      # E1-E5
+python scripts/paper/make_figures.py                        # -> paper/figures/*.pdf
+python scripts/paper/make_tables.py                         # -> paper/tables/*.tex
+```
 
 ---
 
-## 🤝 Contributing
+## What the experiments currently show
 
-This framework relies on a strict registry pattern. If you want to add a new vision backbone (e.g., Vision Transformers), simply inherit from `BaseBackbone`, decorate your class with `@BACKBONE_REGISTRY.register()`, and add the corresponding YAML configuration. 
+Run on `SyntheticOracle`, a physics operator whose indistinguishability class is known in
+**closed form** — so a diagnostic can be validated against ground truth before it is ever pointed
+at a simulator. Numbers below are from a short (4-epoch) smoke run; treat them as pipeline
+evidence, not as paper results.
 
-## 📄 License
-This project is licensed under the MIT License.
+| Claim | Result | Status |
+|---|---|---|
+| **Theorem 4** — residual ambiguity = `ker J(x)` | mean principal angle **0.01°**, max **0.06°**, over 50 states | **Verified** |
+| **Theorem 3** — β → ∞ ⇒ sufficiency | β: 0.5→100 traces R: 0.003→14.2, D: 0.69→−0.96 | **Verified** |
+| **Theorem 7** — marginal coverage ≥ 1−α | 0.979/0.949/0.901/0.802/0.700 vs targets 0.98/0.95/0.90/0.80/0.70 | **Verified** |
+| *z*-ablation — the head actually uses *z* | D = −0.730 (full) vs **+0.656** (ablated) | **Verified** |
+| Abstention buys success | 0.949 when acting (abstained 9/400) vs 0.935 always-acting | Real but **modest** |
+| Hypothesis: "lower-dimensional" | distortion is **not monotone in d** and does **not** saturate at d = rank = 3 | **Not supported yet** |
+
+The last row is reported because it is true. On a 4-epoch run the latent-dimension sweep is noisy
+and does not demonstrate the saturation the hypothesis predicts. It needs a real training budget
+and error bars before it can be claimed. Do not put it in a paper until it does.
+
+### The tier gap: the analytic prior is a poor predictor of real lift outcome
+
+Measured on 320 grasps, analytic Ferrari-Canny prior vs. the MuJoCo rigid-body simulator on the
+**same** `(x, a)`:
+
+| | |
+|---|---|
+| Success agreement | **0.42** |
+| Analytic success rate | 0.68 |
+| Simulated success rate | 0.25 |
+| **Analytic false-positive rate** | **0.74** |
+| Slip correlation | −0.02 |
+
+The analytic tier says "force-closed, good grasp" and the object falls out of the hand **three
+times in four**. Its quasi-static slip model is essentially uncorrelated with dynamic slip.
+
+This is the in-simulation analogue of the sim-to-real sufficiency gap, and it is the most important
+number the oracle produces: it says quantitatively that **training the encoder on the analytic tier
+alone would teach it to be confidently wrong.** It is exactly why Section 11 demands the composition
+rather than either tier alone, and exactly the concern behind reviewer attacks 3 and 11 ("force
+closure computed on estimated geometry is not grounded in outcome"). `CompositeOracle.tier_gap()`
+computes it. (Caveat: the simulator itself is not yet validated — see limitations.)
+
+---
+
+## Repository layout
+
+```
+src/msp/
+├── types.py          Domain types. Decision = ActionChoice | Abstain (a SUM type, so
+│                     fail-open is a type error). PredictionSet carries BOTH label
+│                     memberships, so the Eq-24 singleton test cannot be skipped.
+├── math/             Pure functions, one per equation. No nn.Module, no device, no I/O.
+│   ├── divergences   Eq 11
+│   ├── bottleneck    Eq 7-10   ** beta MULTIPLIES distortion. See the module docstring. **
+│   ├── decision      Eq 13-16
+│   └── conformal     Eq 22-24 + ACI
+├── belief/           The posterior q(z|o). Its ONLY route to the head is rsample(), which
+│                     is what makes the frozen-variance bug unwritable.
+├── oracle/           M — the object that DEFINES the estimand. SyntheticOracle has an
+│                     analytically known ker J(x), which turns Theorem 4 into a unit test.
+├── models/           The two learned modules: BeliefEncoder (A), OutcomeHead (B).
+├── inference/        Algorithm 2: engine (abstention), calibrator, TTA.
+├── engine/           Trainer (AMP/DDP/cosine/best-ckpt), Evaluator (MARGINAL coverage).
+├── diagnostics/      J(x), null space, principal angles. Contribution C2.
+└── data/             Scenes carry the state x (J(x) needs it) and importance weights.
+
+tests/                70 tests. 8+ are named regression tests for audited defects.
+configs/              Hydra. Every documented override actually works.
+scripts/paper/        run_experiments -> results/*.json -> figures + LaTeX tables.
+```
+
+---
+
+## Three invariants this codebase enforces structurally
+
+Each one is a bug the previous implementation shipped, made *unwritable* rather than merely fixed.
+
+**1. The belief cannot be collapsed to its mean.** `Belief` exposes `rsample()` and no `.mean()`.
+The old TTA evaluated the head at the mean, so `∂NLL/∂logvar ≡ 0` and the belief's variance never
+moved — which made contribution C3 false, since TTA cannot reduce an ambiguity that is a functional
+of a variance it cannot change.
+
+**2. Acting without a certificate is a type error.** `select()` returns `ActionChoice | Abstain`.
+The old engine masked uncertified scores with `-inf` and let `argmax` return index 0, silently
+executing an uncertified grasp when the certified set was empty.
+
+**3. β cannot be inverted.** `L = Σ_j β_j·D_j + R`. Larger β buys **sufficiency** (Theorem 3). The
+old code computed `L = Σ_j D_j/β_j + R`, so larger β bought *compression* — the exact opposite —
+and any β sweep would have traced the frontier backwards.
+
+---
+
+## Known limitations, stated up front
+
+- **`ResNetBackbone` global-average-pools**, so `z` is one code for the whole scene. The theory's
+  own physical reading — contact regions matter *because dM/dx is large there* — is spatial and
+  per-object. This is the right inductive bias for the V1 single-object scope and the wrong one for
+  the full claim.
+- **`DiagonalGaussianBelief` is unimodal.** Theorem 5 requires the belief on a symmetric object to
+  be supported on a *group orbit*. A mixture or flow posterior is needed there; the `Belief` ABC
+  exists so it can be dropped in without touching anything else.
+- **The MuJoCo tier runs but is NOT validated.** `MuJoCoOracle` produces non-degenerate outcomes
+  (25% success, 9 ms/rollout), but a *successfully lifted* object still translates ~0.10 m relative
+  to the hand, which a rigidly-carried object should not. That failure is pinned as a strict `xfail`
+  in `tests/oracle/test_mujoco.py` rather than hidden. **Do not produce a paper number from it until
+  that test passes.**
+- **Tier 3 does not exist.** A residual fit to a few thousand *real* robot grasp outcomes is the
+  tier your reviewers say carries the paper. It is deliberately absent rather than stubbed, because
+  a stub would let someone believe the grounding exists.
+- **Theorem 4 is vacuous for a generic box.** `rank J(x) = d_X`, so nothing is continuously
+  unidentifiable: pose, size, friction, mass and COM all change some outcome. The theorem has content
+  only for objects with a genuine outcome-invariance — a **cylinder**, where rotation about the
+  symmetry axis gives `dim ker J = 1`. This limits the theorem's reach and belongs in the paper.
+- **Active perception is not wired.** Eq 17/18 need a rendered look-ahead to produce `IG_true`, and
+  there is no renderer. The `AcquisitionNet` was **removed** rather than shipped untrainable — the
+  audited repo kept one and took an argmax over its random weights to steer a camera.
+
+## License
+
+MIT.
