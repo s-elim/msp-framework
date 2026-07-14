@@ -41,6 +41,48 @@ for, and it is not wired yet.
 
 ---
 
+## The headline result
+
+**Analytic grasp quality, computed on a reconstructed geometry, does not predict what happens.**
+
+13 real LIBERO grocery objects. Ferrari-Canny epsilon is computed on an oriented **bounding box** --
+roughly the geometry a pose-and-shape pipeline recovers. The outcome is a rigid-body lift against the
+object's **true mesh**. AUC 0.5 = the score says nothing.
+
+| Predictor of the real lift outcome | AUC |
+|---|---|
+| Ferrari-Canny epsilon (reconstructed geometry) | **0.539** |
+| **MSP** (belief trained on outcomes) | **0.760** |
+
+**No threshold on the analytic proxy beats "always predict fail"** (0.887 vs a 0.893 majority
+baseline). It is not mis-calibrated; it is uninformative.
+
+### The natural control group
+
+6 of the 13 objects have a **single-box collision hull** -- butter, cookies, cream cheese: they *are*
+boxes, so the bounding-box reconstruction is **exact**. The other 7 are cans, bottles and cartons.
+The thesis predicts the proxy works where its geometry is right and fails where it is not:
+
+| Object geometry | Analytic AUC | MSP AUC |
+|---|---|---|
+| Box-shaped (reconstruction **exact**) | 0.616 | 0.647 |
+| Curved (reconstruction **wrong**) | **0.292** | **0.878** |
+
+On curved objects the analytic proxy scores **worse than chance** -- it is *anti-correlated* with the
+truth, systematically preferring the grasps that fail. This is
+[blueprint wrong-assumption #11](docs/legacy/) -- *"force closure computed on a hallucinated surface
+passes the check and fails the lift"* -- measured, **with no robot**.
+
+On a parametric box this experiment is impossible: the reconstruction and the truth are the same
+object and the gap is identically zero. That is why real meshes are not a nicety.
+
+```bash
+MUJOCO_GL=egl python scripts/paper/run_libero.py --out results/libero
+python scripts/paper/make_tables.py --results results/libero   # -> paper/tables/*.tex
+```
+
+---
+
 ## The experiment: RGB-D grasping
 
 The observation is a **rendered RGB-D image**, the labels come from **MuJoCo rigid-body rollouts**,
