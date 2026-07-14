@@ -42,7 +42,12 @@ from torch.utils.data import DataLoader
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 from msp.data import LiberoCorpusSpec, LiberoGraspDataset, collate, generate_libero_corpus  # noqa: E402
-from msp.diagnostics import analyze, compare_predictors, evaluate_active_perception  # noqa: E402
+from msp.diagnostics import (  # noqa: E402
+    analyze,
+    compare_predictors,
+    evaluate_active_perception,
+    within_scene_auc,
+)
 from msp.engine import Evaluator, TrainConfig, Trainer  # noqa: E402
 from msp.inference import ConformalCalibrator, InferenceConfig, InferenceEngine  # noqa: E402
 from msp.math.bottleneck import BetaSchedule  # noqa: E402
