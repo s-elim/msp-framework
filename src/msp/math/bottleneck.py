@@ -40,7 +40,11 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from msp.math.divergences import gaussian_nll, kl_to_standard_normal, log_normal_nll
+from msp.math.divergences import (
+    gaussian_nll,
+    kl_to_standard_normal,
+    zero_inflated_lognormal_nll,
+)
 from msp.types import Outcome, OutcomeDistribution
 
 __all__ = ["BetaSchedule", "DistortionTerms", "VIBTerms", "rate", "distortion", "vib_objective"]
@@ -154,7 +158,9 @@ def distortion(
         pred.succ_logit, target.succ, reduction="none"
     )
     nll_margin = gaussian_nll(target.margin, pred.margin_mu, pred.margin_logvar)
-    nll_slip = log_normal_nll(target.slip, pred.slip_log_mu, pred.slip_log_logvar)
+    nll_slip = zero_inflated_lognormal_nll(
+        target.slip, pred.slip_zero_logit, pred.slip_log_mu, pred.slip_log_logvar
+    )
 
     def reduce(x: Tensor) -> Tensor:
         # x: (B, Na, 1) -> scalar

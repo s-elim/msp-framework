@@ -82,6 +82,32 @@ class Outcome:
         return self.succ.shape
 
 
+def _bounded_logvar(raw: Tensor, var_floor: float = 0.02, logvar_max: float = 6.0) -> Tensor:
+    """Map a raw network output to a log-variance with a hard FLOOR on the variance.
+
+        logvar = log( var_floor + softplus(raw) ),   then capped above.
+
+    TWO BUGS THIS REPLACES, and the second one is the expensive one.
+
+    (1) A raw `clamp` has ZERO GRADIENT outside its range. A head that saturates the bound stops
+        receiving any signal to come back, and is stuck there for the rest of training. Softplus
+        is monotone and differentiable everywhere, so the bound is respected without a dead zone.
+
+    (2) THE FLOOR IS THE POINT. With the old clamp at logvar >= -10, the head could claim a
+        precision of exp(10) ~ 22,000. It duly overfit the slip magnitude on the training fold,
+        was confidently wrong on held-out data, and 0.5 * 22000 * (log y - mu)^2 detonated:
+        measured on the RGB-D corpus, slip distortion was -1.06 on train and +1697 on validation,
+        which was 1697 of the 1697 total. The entire reported rate-distortion frontier was one
+        term blowing up.
+
+        Zero-inflating the likelihood was necessary but not sufficient -- it fixed the mass at
+        zero and left the positive part free to be arbitrarily overconfident. A model of a noisy
+        physical quantity has no business claiming a precision of 22,000, and a floor says so.
+        var_floor = 0.02 caps the precision at 50.
+    """
+    return torch.log(var_floor + torch.nn.functional.softplus(raw)).clamp(max=logvar_max)
+
+
 @dataclass(frozen=True)
 class OutcomeDistribution:
     """Parameters of the learned outcome kernel p_psi(y | z, a).
@@ -107,23 +133,24 @@ class OutcomeDistribution:
     succ_logit: Tensor
     margin_mu: Tensor
     margin_logvar: Tensor
+    #: P(the grasp slipped at all). Slip is ZERO-INFLATED: a grasp that holds slips exactly zero,
+    #: a grasp that fails slips a lot, and there is very little in between. Forcing a unimodal
+    #: log-normal onto that bimodal truth is not a modelling nicety -- it detonates. Measured on
+    #: the real RGB-D corpus: train slip distortion -1.66, validation +965.2, and the validation
+    #: number was 966 of the total 966, so the entire rate-distortion frontier was just the slip
+    #: term exploding. A confident-but-wrong log-normal makes exp(-logvar)*(y-mu)^2 enormous.
+    slip_zero_logit: Tensor
     slip_log_mu: Tensor
     slip_log_logvar: Tensor
 
-    # Bounds chosen so exp(+-logvar) stays inside float32 range with large headroom.
-    LOGVAR_MIN: float = -10.0
-    LOGVAR_MAX: float = 10.0
+    #: Variance FLOOR, not a clamp. See `_bounded_logvar`.
+    VAR_FLOOR: float = 0.02  # sigma >= 0.14, so exp(-logvar) <= 50
+    LOGVAR_MAX: float = 6.0
 
     def __post_init__(self) -> None:
         # frozen dataclass: mutate through object.__setattr__
-        object.__setattr__(
-            self, "margin_logvar", self.margin_logvar.clamp(self.LOGVAR_MIN, self.LOGVAR_MAX)
-        )
-        object.__setattr__(
-            self,
-            "slip_log_logvar",
-            self.slip_log_logvar.clamp(self.LOGVAR_MIN, self.LOGVAR_MAX),
-        )
+        object.__setattr__(self, "margin_logvar", _bounded_logvar(self.margin_logvar))
+        object.__setattr__(self, "slip_log_logvar", _bounded_logvar(self.slip_log_logvar))
 
     def success_prob(self) -> Tensor:
         """sigma_psi(z, a) = sigmoid(f_psi(z, a)). Formalization Eq 13."""
@@ -141,6 +168,7 @@ class OutcomeDistribution:
             succ_logit=self.succ_logit.float(),
             margin_mu=self.margin_mu.float(),
             margin_logvar=self.margin_logvar.float(),
+            slip_zero_logit=self.slip_zero_logit.float(),
             slip_log_mu=self.slip_log_mu.float(),
             slip_log_logvar=self.slip_log_logvar.float(),
         )
@@ -151,6 +179,7 @@ class OutcomeDistribution:
             succ_logit=self.succ_logit.unsqueeze(1).expand(-1, k, -1, -1),
             margin_mu=self.margin_mu.unsqueeze(1).expand(-1, k, -1, -1),
             margin_logvar=self.margin_logvar.unsqueeze(1).expand(-1, k, -1, -1),
+            slip_zero_logit=self.slip_zero_logit.unsqueeze(1).expand(-1, k, -1, -1),
             slip_log_mu=self.slip_log_mu.unsqueeze(1).expand(-1, k, -1, -1),
             slip_log_logvar=self.slip_log_logvar.unsqueeze(1).expand(-1, k, -1, -1),
         )

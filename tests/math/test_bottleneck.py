@@ -21,6 +21,7 @@ def _make_pair(b: int = 4, na: int = 6, seed: int = 0):
         succ_logit=torch.randn(b, na, 1),
         margin_mu=torch.randn(b, na, 1),
         margin_logvar=torch.randn(b, na, 1) * 0.1,
+        slip_zero_logit=torch.randn(b, na, 1),
         slip_log_mu=torch.randn(b, na, 1),
         slip_log_logvar=torch.randn(b, na, 1) * 0.1,
     )
@@ -87,6 +88,7 @@ def test_eq9_distortion_is_a_proper_negative_log_likelihood() -> None:
         succ_logit=torch.where(succ > 0.5, 8.0, -8.0),
         margin_mu=margin.clone(),
         margin_logvar=torch.full_like(margin, -2.0),
+        slip_zero_logit=torch.where(slip < 1e-3, 8.0, -8.0),
         slip_log_mu=torch.log(slip),
         slip_log_logvar=torch.full_like(slip, -2.0),
     )
@@ -94,6 +96,7 @@ def test_eq9_distortion_is_a_proper_negative_log_likelihood() -> None:
         succ_logit=torch.where(succ > 0.5, -8.0, 8.0),  # confidently wrong
         margin_mu=margin + 5.0,
         margin_logvar=torch.full_like(margin, -2.0),
+        slip_zero_logit=torch.where(slip < 1e-3, -8.0, 8.0),
         slip_log_mu=torch.log(slip) + 5.0,
         slip_log_logvar=torch.full_like(slip, -2.0),
     )
@@ -103,15 +106,24 @@ def test_eq9_distortion_is_a_proper_negative_log_likelihood() -> None:
     assert d_good.slip < d_bad.slip
 
 
-def test_regression_gaussian_nll_does_not_overflow_on_a_confident_head() -> None:
-    """REGRESSION. The audited head left margin/slip logvar UNCLAMPED, so exp(-logvar)
-    overflowed to inf once the head grew confident, producing NaN gradients.
-    `OutcomeDistribution` now clamps on construction."""
+def test_regression_a_head_cannot_claim_absurd_precision() -> None:
+    """REGRESSION -- TWO DEFECTS, ONE TEST.
+
+    (a) The audited head left logvar UNCLAMPED, so exp(-logvar) overflowed to inf and produced
+        NaN gradients once the head grew confident.
+    (b) Clamping at logvar >= -10 fixed the overflow but still permitted a precision of
+        exp(10) ~ 22,000. The head overfit the slip magnitude, was confidently wrong on held-out
+        data, and the validation distortion hit +1697 nats -- the entire reported frontier.
+
+    A variance FLOOR is the fix: a model of a noisy physical quantity cannot claim a precision of
+    22,000, and `_bounded_logvar` will not let it.
+    """
     b, na = 2, 3
     pred = OutcomeDistribution(
         succ_logit=torch.zeros(b, na, 1),
         margin_mu=torch.zeros(b, na, 1),
         margin_logvar=torch.full((b, na, 1), -500.0),  # absurdly confident
+        slip_zero_logit=torch.zeros(b, na, 1),
         slip_log_mu=torch.zeros(b, na, 1),
         slip_log_logvar=torch.full((b, na, 1), -500.0),
     )
@@ -120,6 +132,49 @@ def test_regression_gaussian_nll_does_not_overflow_on_a_confident_head() -> None
     )
     d = distortion(pred, target)
     assert torch.isfinite(d.succ) and torch.isfinite(d.margin) and torch.isfinite(d.slip)
+
+    # The floor must actually bind: precision can never exceed 1 / VAR_FLOOR.
+    max_precision = torch.exp(-pred.margin_logvar).max()
+    assert float(max_precision) <= 1.0 / OutcomeDistribution.VAR_FLOOR + 1e-3, (
+        f"head claims precision {float(max_precision):.0f}; the variance floor is not binding"
+    )
+
+
+def test_slip_is_zero_inflated_not_lognormal() -> None:
+    """REGRESSION -- THE EXPLODING VALIDATION LOSS.
+
+    Slip is BIMODAL, and the physics is why: a grasp that holds slips exactly zero, a grasp that
+    fails slips centimetres, and almost nothing lands in between. A plain log-normal cannot
+    represent that, so it becomes confidently wrong, and exp(-logvar)*(log y - mu)^2 detonates.
+
+    Measured on the real RGB-D corpus with a plain log-normal: slip distortion was -1.66 on train
+    and +965.2 on validation -- and 965.2 of the 966.5 total, meaning the *entire* reported
+    rate-distortion frontier was the slip term blowing up on held-out data.
+
+    A zero-inflated model is bounded by construction: the Bernoulli "did it slip" term cannot
+    exceed a few nats, and the log-normal magnitude is only ever evaluated where slip is positive.
+    """
+    b, na = 4, 8
+    torch.manual_seed(0)
+    # Exactly the bimodal truth: half the grasps hold (slip = 0), half fail (slip ~ 0.2 m).
+    slip = torch.where(torch.rand(b, na, 1) < 0.5, 0.0, 0.2 + 0.05 * torch.rand(b, na, 1))
+    target = Outcome(succ=(slip < 1e-3).float(), margin=torch.zeros(b, na, 1), slip=slip)
+
+    # A head that is CONFIDENTLY WRONG about slip -- the state a plain log-normal converges to.
+    bad = OutcomeDistribution(
+        succ_logit=torch.zeros(b, na, 1),
+        margin_mu=torch.zeros(b, na, 1),
+        margin_logvar=torch.zeros(b, na, 1),
+        slip_zero_logit=torch.zeros(b, na, 1),
+        slip_log_mu=torch.full((b, na, 1), 2.0),  # wildly wrong
+        slip_log_logvar=torch.full((b, na, 1), -8.0),  # and very sure of it
+    )
+    d = distortion(bad, target)
+    assert torch.isfinite(d.slip)
+    assert float(d.slip) < 1e4, (
+        f"slip distortion is {float(d.slip):.1f} nats. A bounded likelihood cannot do this; the "
+        "zero-inflation is not being applied."
+    )
 
 
 def test_slip_is_modeled_on_the_nonnegative_halfline() -> None:
@@ -134,6 +189,7 @@ def test_slip_is_modeled_on_the_nonnegative_halfline() -> None:
         succ_logit=torch.zeros(1, 1, 1),
         margin_mu=torch.zeros(1, 1, 1),
         margin_logvar=torch.zeros(1, 1, 1),
+        slip_zero_logit=torch.zeros(1, 1, 1),
         slip_log_mu=torch.zeros(1, 1, 1),
         slip_log_logvar=torch.zeros(1, 1, 1),
     )

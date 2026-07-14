@@ -88,20 +88,62 @@ def gaussian_nll(y: Tensor, mu: Tensor, logvar: Tensor) -> Tensor:
 
 
 def log_normal_nll(y: Tensor, log_mu: Tensor, log_logvar: Tensor, eps: float = 1e-6) -> Tensor:
-    """Negative log-likelihood of y >= 0 under LogNormal(log_mu, exp(log_logvar)).
-
-    The outcome space (Section 0) constrains slip to R_{>=0}. Modeling it with an
-    unconstrained Gaussian -- as the previous implementation did -- places probability mass
-    on negative slip, which is not a physical state, and biases the fitted variance.
+    """Negative log-likelihood of y > 0 under LogNormal(log_mu, exp(log_logvar)).
 
         -log LogNormal(y) = log(y) + 0.5*[log(2pi) + log_logvar
                                           + (log(y) - log_mu)^2 * exp(-log_logvar)]
 
-    Args:
-        y: non-negative observations. Values below `eps` are floored to `eps` so that
-           an exactly-zero slip (a clean, non-slipping grasp -- the common case) does not
-           produce -inf.
+    Only valid for STRICTLY POSITIVE y. For slip, use `zero_inflated_lognormal_nll`.
     """
     y_safe = y.clamp_min(eps)
     log_y = torch.log(y_safe)
     return log_y + gaussian_nll(log_y, log_mu, log_logvar)
+
+
+def zero_inflated_lognormal_nll(
+    y: Tensor,
+    zero_logit: Tensor,
+    log_mu: Tensor,
+    log_logvar: Tensor,
+    threshold: float = 1e-3,
+) -> Tensor:
+    """Negative log-likelihood of slip under a ZERO-INFLATED log-normal.
+
+        p(y) =      pi          if y ~= 0            (the grasp held; it did not slip at all)
+               (1 - pi) * LogNormal(y; mu, sigma^2)  if y > 0
+
+    with pi = sigmoid(zero_logit).
+
+    WHY THIS AND NOT A PLAIN LOG-NORMAL. Slip is bimodal, and the physics is the reason: a grasp
+    that holds slips EXACTLY zero, a grasp that fails slips centimetres, and almost nothing lands
+    in between. A unimodal log-normal cannot represent that, so it splits the difference -- and
+    because it is also fitting a variance, it becomes confidently wrong, at which point
+    exp(-logvar) * (log y - mu)^2 detonates.
+
+    That is not hypothetical. On the RGB-D corpus with a plain log-normal, the slip distortion was
+    -1.66 on train and +965.2 on validation, and the validation total was 966 -- i.e. the *entire*
+    reported distortion, and therefore the entire rate-distortion frontier, was the slip term
+    exploding on held-out data.
+
+    Decomposing into "did it slip?" (a Bernoulli) and "by how much, given that it did?" (a
+    log-normal on the positive part) matches the physics exactly and is bounded by construction:
+    the Bernoulli term cannot exceed a few nats, and the log-normal term is only ever evaluated on
+    points where slip is genuinely positive.
+
+    Args:
+        y: observed slip, >= 0.
+        zero_logit: logit of P(no slip).
+        threshold: slip below this counts as "no slip". 1 mm.
+    """
+    is_zero = (y < threshold).to(y.dtype)
+
+    # "Did it slip at all?" -- always evaluated, always bounded.
+    bernoulli = torch.nn.functional.binary_cross_entropy_with_logits(
+        zero_logit, is_zero, reduction="none"
+    )
+
+    # "By how much?" -- only where it actually slipped. The clamp keeps log(y) finite at the
+    # zero points, whose contribution is masked out anyway.
+    magnitude = log_normal_nll(y.clamp_min(threshold), log_mu, log_logvar)
+
+    return bernoulli + (1.0 - is_zero) * magnitude

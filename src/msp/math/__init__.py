@@ -26,6 +26,7 @@ from msp.math.divergences import (
     gaussian_nll,
     kl_to_standard_normal,
     log_normal_nll,
+    zero_inflated_lognormal_nll,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "nonconformity_scores", "prediction_set",
     "SuccessStats", "ambiguity", "risk_averse_score", "success_stats",
     "diagonal_gaussian_kl", "gaussian_nll", "kl_to_standard_normal", "log_normal_nll",
+    "zero_inflated_lognormal_nll",
 ]
