@@ -293,7 +293,13 @@ def test_no_geometry_supervision_leaks_into_the_objective() -> None:
     import inspect
 
     params = set(inspect.signature(vib_objective).parameters)
-    assert params == {"pred", "target", "mu", "logvar", "beta", "weights"}, (
+    assert params == {"pred", "target", "mu", "logvar", "beta", "weights", "rate_weight"}, (
         f"vib_objective signature changed to {params}. If a geometry/pose term was added, "
         "it contradicts the manipulation-sufficiency estimand (Section 3)."
     )
+    # `rate_weight` is a TRAINING SCHEDULE (KL warmup), not supervision: it scales the rate term the
+    # objective already had, carries no target, and must reach 1.0, at which point this is Eq 10
+    # exactly. It is admissible for that reason and no other -- anything here that takes a POSE or a
+    # SHAPE as an argument is not.
+    for banned in ("pose", "shape", "geometry", "state", "x_true", "mesh", "depth"):
+        assert banned not in params, f"vib_objective must never see {banned!r}"
