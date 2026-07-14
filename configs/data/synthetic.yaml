@@ -1,3 +1,4 @@
+kind: synthetic
 n_train: 20000
 n_val: 2000
 n_calib: 4000     # MUST be disjoint from train (Assumption A5); the calibrator enforces it.

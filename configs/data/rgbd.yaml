@@ -1,0 +1,15 @@
+# RGB-D from MuJoCo: the real experiment. Observations are 4-channel images rendered from the
+# physics scene; labels come from rigid-body rollouts.
+kind: rgbd
+n_train: 20000
+n_val: 2000
+n_calib: 4000     # MUST be disjoint from train (Assumption A5); the calibrator enforces it
+n_test: 4000
+n_actions: 8
+image_size: 96
+shape: box        # box | cylinder.  Theorem 4 is VACUOUS for a box (rank J = d_X); use a
+                  # cylinder for the identifiability experiment, where dim ker J = 1.
+use_simulator: true   # false = analytic labels only (fast, but FP rate ~0.62 vs the simulator)
+cache_dir: data/corpus
+batch_size: 128
+num_workers: 4

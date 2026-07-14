@@ -49,6 +49,12 @@ def build_oracle(cfg: Any) -> SyntheticOracle:
 
 
 def build_models(cfg: Any, obs_dim: int) -> tuple[BeliefEncoder, OutcomeHead]:
+    if cfg.data.get("kind", "synthetic") == "rgbd" and cfg.model.backbone == "mlp":
+        raise ValueError(
+            "data=rgbd yields (4, H, W) images, but model=mlp expects a vector. Use model=resnet. "
+            "(The audited README advertised the RGB-D backbone while the dataset produced 32-dim "
+            "vectors; `model=resnet` crashed inside conv2d. Fail loudly here instead.)"
+        )
     if cfg.model.backbone == "mlp":
         backbone = MLPBackbone(obs_dim, output_dim=cfg.model.hidden)
     elif cfg.model.backbone == "resnet":
@@ -67,10 +73,12 @@ def build_models(cfg: Any, obs_dim: int) -> tuple[BeliefEncoder, OutcomeHead]:
     return encoder, head
 
 
-def build_loaders(cfg: Any, oracle: SyntheticOracle) -> dict[str, DataLoader[Any]]:
+def build_loaders(cfg: Any, oracle: Any) -> dict[str, DataLoader[Any]]:
     """Four DISJOINT folds. The seeds differ, which is what makes the calibration fold
     genuinely held out (Assumption A5) -- the calibrator will refuse a fold that collides
     with training."""
+    if cfg.data.get("kind", "synthetic") == "rgbd":
+        return _build_rgbd_loaders(cfg)
     d = cfg.data
     specs = {
         "train": (d.n_train, 1),
@@ -110,6 +118,57 @@ def build_loaders(cfg: Any, oracle: SyntheticOracle) -> dict[str, DataLoader[Any
     return out
 
 
+def _build_rgbd_loaders(cfg: Any) -> dict[str, DataLoader[Any]]:
+    """The real experiment: RGB-D images rendered from MuJoCo, labelled by rigid-body rollouts.
+
+    The corpus is generated ONCE and cached. Rendering is ~2 ms/frame and a rollout ~10 ms/grasp,
+    so a 20k-scene corpus is a few minutes -- but only if it is not regenerated every epoch.
+    """
+    from pathlib import Path
+
+    from msp.data import CorpusSpec, RGBDGraspDataset, generate_corpus
+
+    d = cfg.data
+    cache = Path(d.cache_dir)
+    specs = {
+        "train": (d.n_train, 1),
+        "val": (d.n_val, 2),
+        "calib": (d.n_calib, 3),
+        "test": (d.n_test, 4),
+    }
+    out = {}
+    for name, (n, seed) in specs.items():
+        path = generate_corpus(
+            CorpusSpec(
+                n_scenes=n,
+                n_actions=d.n_actions,
+                shape=d.shape,
+                image_size=d.image_size,
+                seed=seed,
+                use_simulator=d.use_simulator,
+            ),
+            cache,
+        )
+        ds = RGBDGraspDataset(path)
+        sampler = None
+        if is_distributed() and name == "train":
+            sampler = DistributedSampler(ds, shuffle=True, drop_last=True)
+        out[name] = DataLoader(
+            ds,
+            batch_size=d.batch_size,
+            shuffle=(name == "train" and sampler is None),
+            sampler=sampler,
+            num_workers=d.num_workers,
+            collate_fn=collate,
+            pin_memory=True,
+            drop_last=(name == "train"),
+            persistent_workers=d.num_workers > 0,
+            worker_init_fn=_seed_worker,
+            generator=torch.Generator().manual_seed(cfg.seed),
+        )
+    return out
+
+
 def _seed_worker(worker_id: int) -> None:
     """Seed each DataLoader worker. Without this, anything random inside a worker is not
     reproducible across runs, which quietly breaks the reproducibility claim."""
@@ -128,7 +187,7 @@ def build_all(cfg: Any, device: torch.device | None = None) -> Bundle:
             cfg.device if torch.cuda.is_available() or cfg.device == "cpu" else "cpu"
         )
     oracle = build_oracle(cfg)
-    encoder, head = build_models(cfg, cfg.data.obs_dim)
+    encoder, head = build_models(cfg, cfg.data.get('obs_dim', 32))
     loaders = build_loaders(cfg, oracle)
 
     train_cfg = TrainConfig(

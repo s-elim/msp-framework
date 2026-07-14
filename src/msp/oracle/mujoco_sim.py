@@ -37,7 +37,9 @@ composition that is both correct and affordable.
 
 from __future__ import annotations
 
-import math
+import os
+
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -66,7 +68,7 @@ class SimConfig:
     lift_steps: int = 400  # lift and hold
     lift_height: float = 0.12  # metres
     lift_speed: float = 0.15  # m/s
-    grip_force: float = 40.0  # N, per finger
+    grip_force: float = 80.0  # N, per finger
     success_height: float = 0.05  # object must clear this to count as lifted
     solver_iterations: int = 100
 
@@ -86,9 +88,28 @@ _MJCF = """
     <geom solref="0.004 1" solimp="0.95 0.99 0.001"/>
   </default>
 
+  <visual>
+    <global offwidth="640" offheight="480"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.3 0.32 0.35" rgb2="0.38 0.40 0.43"
+             width="300" height="300"/>
+    <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.05"/>
+  </asset>
+
   <worldbody>
-    <light pos="0 0 1"/>
-    <geom name="floor" type="plane" size="1 1 0.05" pos="0 0 0" friction="1 0.02 0.001"/>
+    <light pos="0.3 -0.3 0.8" dir="-0.3 0.3 -0.8" diffuse="0.8 0.8 0.8" castshadow="true"/>
+    <light pos="-0.3 0.3 0.6" dir="0.3 -0.3 -0.6" diffuse="0.4 0.4 0.45" castshadow="false"/>
+    <geom name="floor" type="plane" size="1 1 0.05" pos="0 0 0" friction="1 0.02 0.001"
+          material="grid_mat"/>
+
+    <!-- The RGB-D sensor. Mounted off-axis and looking down at the workspace, like a wrist- or
+         shoulder-mounted RealSense. Its pose is FIXED and part of the model, so o = render(x) is a
+         well-defined observation kernel p(o|x) rather than a free parameter of the experiment. -->
+    <camera name="rgbd" pos="0.17 -0.17 0.20" xyaxes="0.707 0.707 0 -0.43 0.43 0.79"
+            fovy="48"/>
 
     <body name="object" pos="0 0 0.05">
       <freejoint name="obj"/>
@@ -101,31 +122,55 @@ _MJCF = """
 
     <body name="hand" pos="0 0 0.4">
       <freejoint name="hand_free"/>
-      <geom name="palm" type="box" size="0.03 0.02 0.012" mass="0.6"
-            contype="0" conaffinity="0" rgba="0.2 0.2 0.25 0.5"/>
-      <body name="finger_l" pos="-0.045 0 -0.035">
-        <joint name="fl" type="slide" axis="1 0 0" range="0 0.042" damping="20"/>
-        <geom name="fl_geom" type="box" size="0.006 0.014 0.028" mass="0.05"
+      <geom name="palm" type="box" size="0.030 0.020 0.012" mass="0.6"
+            friction="{mu} 0.05 0.002" rgba="0.2 0.2 0.25 0.6"/>
+      <body name="finger_l" pos="-0.050 0 -0.060">
+        <joint name="fl" type="slide" axis="1 0 0" range="0 0.050" limited="true" damping="30"/>
+        <geom name="fl_geom" type="box" size="0.006 0.014 0.020" mass="0.05"
               friction="{mu} 0.05 0.002" rgba="0.9 0.5 0.2 1"/>
       </body>
-      <body name="finger_r" pos="0.045 0 -0.035">
-        <joint name="fr" type="slide" axis="-1 0 0" range="0 0.042" damping="20"/>
-        <geom name="fr_geom" type="box" size="0.006 0.014 0.028" mass="0.05"
+      <body name="finger_r" pos="0.050 0 -0.060">
+        <joint name="fr" type="slide" axis="-1 0 0" range="0 0.050" limited="true" damping="30"/>
+        <geom name="fr_geom" type="box" size="0.006 0.014 0.020" mass="0.05"
               friction="{mu} 0.05 0.002" rgba="0.9 0.5 0.2 1"/>
       </body>
     </body>
   </worldbody>
 
   <equality>
-    <weld body1="hand" body2="target" solref="0.02 1" solimp="0.9 0.95 0.001"/>
+    <!-- STIFF weld. A soft one lets the hand sag under the object's weight during the lift, and
+         that sag is then attributed to the OBJECT and reported as slip. -->
+    <weld body1="hand" body2="target" solref="0.005 1" solimp="0.95 0.99 0.001"/>
   </equality>
 
   <actuator>
-    <position name="grip_l" joint="fl" kp="800" ctrlrange="0 0.042" forcerange="-60 60"/>
-    <position name="grip_r" joint="fr" kp="800" ctrlrange="0 0.042" forcerange="-60 60"/>
+    <position name="grip_l" joint="fl" kp="2000" ctrlrange="0 0.050"
+              forcerange="-{gripf} {gripf}"/>
+    <position name="grip_r" joint="fr" kp="2000" ctrlrange="0 0.050"
+              forcerange="-{gripf} {gripf}"/>
   </actuator>
 </mujoco>
 """
+
+#: Geoms belonging to the gripper. A grasp pose whose OPEN jaws already intersect the object or
+#: the table is not executable at all, and must be rejected rather than simulated: teleporting a
+#: finger into an object produces a penetration blow-up that launches it into the air.
+_GRIPPER_GEOMS = ("palm", "fl_geom", "fr_geom")
+
+#: The TOOL CENTRE POINT in the hand frame: the point midway between the two jaws. An action names
+#: the grasp point, and the grasp point is here -- not at the hand's origin, which is up at the
+#: palm. Derived from the MJCF: fingers are at z = -0.040.
+TCP_OFFSET = np.array([0.0, 0.0, -0.060])
+
+# GEOMETRIC BUDGET, and it is tight enough to be worth writing down.
+#   palm half-thickness      0.012   -> palm bottom sits 0.012 below the hand origin
+#   TCP depth                0.060   -> so the palm clears an object of half-height h only if
+#                                       0.060 - 0.012 > h,  i.e.  h < 0.048
+#   finger half-height       0.020   -> finger bottoms sit 0.080 below the hand origin, so they
+#                                       clear the TABLE only if  h > 0.080 - 0.060 = 0.020
+# Objects are sampled with half-height in roughly [0.022, 0.037], which fits inside (0.020, 0.048).
+# Get this wrong in either direction and the grasp is rejected for collision before it is ever
+# simulated: too shallow and the palm lands on the object, too deep and the fingers hit the table.
 
 
 class MuJoCoOracle(PhysicsOracle):
@@ -163,6 +208,7 @@ class MuJoCoOracle(PhysicsOracle):
         self.cfg = cfg or SimConfig()
         self.rng = np.random.default_rng(seed)
         self._cache: dict[tuple, object] = {}
+        self._renderers: dict[tuple, object] = {}
 
     @property
     def state_dim(self) -> int:
@@ -208,6 +254,7 @@ class MuJoCoOracle(PhysicsOracle):
             gsize=gsize,
             mass=mass,
             mu=mu,
+            gripf=self.cfg.grip_force,
             cx=com[0], cy=com[1], cz=com[2],
             ixx=max(ixx, 1e-6), iyy=max(iyy, 1e-6), izz=max(izz, 1e-6),
         )
@@ -216,6 +263,23 @@ class MuJoCoOracle(PhysicsOracle):
         if len(self._cache) > 256:
             self._cache.pop(next(iter(self._cache)))
         return m
+
+    #: Slip reported for a grasp whose open jaws already intersect the scene. Such a grasp is not
+    #: executable at all, so it is a total failure rather than a partial one.
+    COLLISION_SLIP: float = 0.5
+
+    def _gripper_intersects_scene(self, m, d) -> bool:
+        """True if any gripper geom is in contact while the jaws are still OPEN."""
+        import mujoco
+
+        ids = {
+            mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, g) for g in _GRIPPER_GEOMS
+        }
+        for i in range(d.ncon):
+            con = d.contact[i]
+            if con.geom1 in ids or con.geom2 in ids:
+                return True
+        return False
 
     # -- one rollout ---------------------------------------------------------
 
@@ -238,19 +302,46 @@ class MuJoCoOracle(PhysicsOracle):
         d.qpos[obj_adr : obj_adr + 3] = [0.0, 0.0, rest_z]
         d.qpos[obj_adr + 3 : obj_adr + 7] = obj_quat
 
-        # Place the hand AT the grasp pose, jaws open.
-        hand_pos = np.asarray(grasp_pos, dtype=float) + np.array([0.0, 0.0, rest_z])
+        # Place the hand so that its TOOL CENTRE POINT lands on the grasp position.
+        #
+        # An action `a` names the point BETWEEN THE JAWS -- that is what the analytic oracle rays
+        # through, and it is what a grasp pose means. It is not the hand's origin: the fingers hang
+        # below the palm, so the jaw centre sits at TCP_OFFSET in the hand frame. Placing the hand
+        # ORIGIN at the grasp point instead buries the palm inside the object, and every grasp is
+        # then (correctly) rejected as colliding -- the simulator reported a 0.000 success rate,
+        # which is what sent me looking.
+        R = _quat_to_matrix(torch.tensor(grasp_quat, dtype=torch.float32).view(1, 4))[0].numpy()
+        hand_pos = (
+            np.asarray(grasp_pos, dtype=float)
+            + np.array([0.0, 0.0, rest_z])
+            - R @ TCP_OFFSET
+        )
         d.qpos[hand_adr : hand_adr + 3] = hand_pos
         d.qpos[hand_adr + 3 : hand_adr + 7] = grasp_quat
         d.mocap_pos[0] = hand_pos
         d.mocap_quat[0] = grasp_quat
-        d.ctrl[:] = [0.0, 0.0]  # open
+        d.ctrl[:] = [0.0, 0.0]  # jaws open
         mujoco.mj_forward(m, d)
+
+        # REJECT NON-EXECUTABLE GRASPS BEFORE SIMULATING THEM.
+        #
+        # If the OPEN jaws already intersect the object or the table, the grasp pose is not
+        # reachable: a real arm would collide on approach. Stepping the simulator from that state
+        # does not model a bad grasp, it models a penetration blow-up -- MuJoCo resolves the
+        # overlap with an enormous impulse and LAUNCHES the object into the air. Measured before
+        # this check: 12 contacts at placement, and the object flew 13 cm upward before falling
+        # back. Some of those flights cleared the success threshold, so the simulator was scoring
+        # explosions as successful grasps.
+        #
+        # A colliding grasp is a genuine failure of the action, so we label it as one and return.
+        if self._gripper_intersects_scene(m, d):
+            return 0.0, self.COLLISION_SLIP
+
         for _ in range(40):
             mujoco.mj_step(m, d)
 
         # Close the jaws.
-        d.ctrl[:] = [0.042, 0.042]
+        d.ctrl[:] = [0.05, 0.05]
         for _ in range(c.close_steps):
             mujoco.mj_step(m, d)
         for _ in range(c.settle_steps):
@@ -278,6 +369,123 @@ class MuJoCoOracle(PhysicsOracle):
         expected = grasped_pose + hand_travel  # where the object would be if held rigidly
         slip = float(np.linalg.norm(final - expected))
         return success, min(slip, 0.5)
+
+    # -- the observation kernel p(o | x) --------------------------------------
+
+    @torch.no_grad()
+    def render(
+        self,
+        state: Tensor,
+        height: int = 128,
+        width: int = 128,
+        depth_noise: float = 0.002,
+        max_depth: float = 1.5,
+    ) -> Tensor:
+        """Render RGB-D observations of the scene. This is p(o | x): the sensor model.
+
+        THIS IS THE PIECE THAT TURNS THE FRAMEWORK INTO AN EXPERIMENT. Until it existed, the
+        "observation" the encoder saw was a 32-dimensional random linear projection of the state --
+        a toy. The whole point of MSP is that a *camera* cannot resolve the state, so the belief
+        must carry epistemic uncertainty about the parts it cannot see. That claim is only testable
+        against a real image.
+
+        And note what the camera does NOT show: friction, mass, and the centre of mass. Those three
+        decide slip and torque failure, and no pixel reveals them. A pose estimator cannot even
+        represent that ignorance. MSP's belief can, and active touch (Eq 20/21) is what resolves it.
+
+        HEADLESS RENDERING. On a server with no display, MuJoCo needs an offscreen GL backend. We
+        set MUJOCO_GL=egl if the caller has not chosen one; without it, `mujoco.Renderer` raises
+        "an OpenGL platform library has not been loaded into this process".
+
+        Args:
+            state: (B, state_dim)
+            depth_noise: Gaussian noise on the depth channel, in metres. Real depth sensors are not
+                exact, and a model trained on noiseless depth learns to trust it absolutely.
+            max_depth: depth is normalized by this, so the channel lands in [0, 1] like RGB.
+
+        Returns:
+            (B, 4, H, W) float32. Channels 0:3 are RGB in [0,1]; channel 3 is normalized depth.
+        """
+        import mujoco
+
+        os.environ.setdefault("MUJOCO_GL", "egl")
+
+        st = state.detach().cpu()
+        half = torch.exp(st[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038).numpy()
+        mass = torch.exp(st[:, STATE_SLICES["log_mass"]]).clamp(0.01, 10.0).numpy()
+        mu = torch.exp(st[:, STATE_SLICES["log_friction"]]).clamp(0.05, 2.0).numpy()
+        com = st[:, STATE_SLICES["com"]].numpy()
+        R = _axis_angle_to_matrix(st[:, STATE_SLICES["pose_r"]])
+        quat = _matrix_to_quat(R).numpy()
+        t_obj = st[:, STATE_SLICES["pose_t"]].numpy()
+
+        # ONE model and ONE GL context for the whole batch.
+        #
+        # `_model` bakes the object's size, mass and friction into the MJCF, so it returns a
+        # DISTINCT model per scene -- and a renderer is bound to a model, so a naive implementation
+        # builds a fresh GL context per frame. Context creation costs ~100 ms, which turned a
+        # 2000-scene render from ~3 minutes into something that had not finished in ten.
+        #
+        # MuJoCo exposes geometry as mutable arrays on the model, so we compile once with a
+        # placeholder object and then write the per-scene size directly into `geom_size`. The
+        # renderer never notices, because the model object is the same one it was bound to.
+        m = self._model(half[0], float(mass[0, 0]), float(mu[0, 0]), com[0])
+        r = self._renderer(m, height, width)
+        gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "obj_geom")
+        oa = m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "obj")]
+        ha = m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "hand_free")]
+        d = mujoco.MjData(m)
+
+        out = torch.empty(state.shape[0], 4, height, width, dtype=torch.float32)
+
+        for i in range(state.shape[0]):
+            if self.shape == "cylinder":
+                m.geom_size[gid, 0] = half[i][0]
+                m.geom_size[gid, 1] = half[i][2]
+            else:
+                m.geom_size[gid, :3] = half[i]
+
+            rest_z = float(half[i][2]) + 2e-3
+            mujoco.mj_resetData(m, d)
+            d.qpos[oa : oa + 3] = [t_obj[i][0], t_obj[i][1], rest_z]
+            d.qpos[oa + 3 : oa + 7] = quat[i]
+            # Park the hand out of frame: the observation is of the SCENE, taken before the grasp.
+            d.qpos[ha : ha + 3] = [0.0, 0.0, 1.5]
+            mujoco.mj_forward(m, d)
+
+            r.disable_depth_rendering()
+            r.update_scene(d, camera="rgbd")
+            rgb = torch.from_numpy(r.render().copy()).float() / 255.0  # (H, W, 3)
+
+            r.enable_depth_rendering()
+            r.update_scene(d, camera="rgbd")
+            dep = torch.from_numpy(r.render().copy()).float()  # (H, W), metres
+            r.disable_depth_rendering()
+
+            if depth_noise > 0:
+                dep = dep + depth_noise * torch.randn_like(dep)
+            dep = (dep / max_depth).clamp(0.0, 1.0)
+
+            out[i, 0:3] = rgb.permute(2, 0, 1)
+            out[i, 3] = dep
+
+        return out
+
+    def _renderer(self, model, height: int, width: int):
+        """One Renderer per (model, size). Constructing a GL context per frame is the difference
+        between rendering a dataset in minutes and in hours."""
+        import mujoco
+
+        key = (id(model), height, width)
+        r = self._renderers.get(key)
+        if r is None:
+            r = mujoco.Renderer(model, height=height, width=width)
+            self._renderers[key] = r
+            # Deliberately NOT closed: EGL context teardown raises on this driver, and the number
+            # of distinct (object size, resolution) pairs is small. Bounded, not leaked.
+            if len(self._renderers) > 16:
+                self._renderers.pop(next(iter(self._renderers)))
+        return r
 
     # -- the interface -------------------------------------------------------
 
@@ -345,4 +553,3 @@ def _matrix_to_quat(R: Tensor) -> Tensor:
     return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
-del math, _quat_to_matrix  # imported for symmetry with analytic.py; not needed here

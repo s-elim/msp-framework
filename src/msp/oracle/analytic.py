@@ -137,6 +137,12 @@ class AnalyticGraspOracle(PhysicsOracle):
 
     differentiable = True
 
+    # Gripper geometry. These MUST mirror the MJCF in mujoco_sim.py -- the two tiers are only
+    # comparable if they model the same hand.
+    JAW_INNER_HALF_WIDTH: float = 0.044  # open jaws reach +-0.044 about the closing axis
+    FINGER_BELOW_TCP: float = 0.020  # fingertips extend this far below the TCP
+    PALM_ABOVE_TCP: float = 0.048  # palm underside sits this far above the TCP
+
     def __init__(
         self,
         shape: str = "box",  # "box" | "cylinder"
@@ -183,7 +189,10 @@ class AnalyticGraspOracle(PhysicsOracle):
 
         t_obj = state[:, STATE_SLICES["pose_t"]]  # (B, 3)
         R_obj = _axis_angle_to_matrix(state[:, STATE_SLICES["pose_r"]])  # (B, 3, 3)
-        half = torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.01, 0.5)  # (B, 3)
+        # Half-extents are clamped to what the gripper can physically straddle. The jaws open to
+        # +-0.044 about the closing axis, so anything above that is not a hard grasp, it is an
+        # impossible one, and it teaches the model nothing except that big things fail.
+        half = torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038)  # (B, 3)
 
         g_t = actions[..., 0:3]  # (B, Na, 3)
         R_g = _quat_to_matrix(actions[..., 3:7])  # (B, Na, 3, 3)
@@ -340,11 +349,72 @@ class AnalyticGraspOracle(PhysicsOracle):
 
     # -- the operator --------------------------------------------------------
 
+    def _reachability(self, state: Tensor, actions: Tensor) -> Tensor:
+        """Signed clearance of the OPEN gripper against the object and the table. (B, Na).
+
+        Positive means the grasp pose is executable; negative means the jaws, or the palm, or the
+        fingertips are already inside something before the grasp even starts.
+
+        WHY THIS BELONGS IN THE ANALYTIC TIER. Force closure asks "if the jaws were in contact
+        here, would the grasp hold?" It says nothing about whether the gripper can BE there. Without
+        a reachability term the analytic tier claimed a 96% success rate against a simulator that
+        measured 33%, because it was scoring grasps that drive the fingers through the table. That
+        is not a hard grasp; it is an impossible one, and a prior that cannot tell the difference is
+        a bad prior. This term is the geometric half of "can this action be executed".
+
+        The three clearances mirror the gripper's geometry exactly (see mujoco_sim.TCP_OFFSET):
+
+            jaw    the object's extent along the CLOSING axis must fit inside the open jaws
+            floor  the fingertips, 0.020 below the TCP, must stay above the table
+            palm   the palm, 0.048 above the TCP, must stay above the top of the object
+        """
+        b, na, _ = actions.shape
+        R_obj = _axis_angle_to_matrix(state[:, STATE_SLICES["pose_r"]])  # (B,3,3)
+        half = torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038)  # (B,3)
+
+        R_g = _quat_to_matrix(actions[..., 3:7])  # (B,Na,3,3)
+        close_axis = R_g[..., :, 0]  # local +x, world frame
+        tcp = actions[..., 0:3]  # (B,Na,3), relative to the object's centre
+
+        # Jaw clearance: the object's extent along the CLOSING axis, in the OBJECT frame.
+        c_obj = torch.einsum("bji,bnj->bni", R_obj, close_axis)  # world -> object frame
+
+        if self.shape == "cylinder":
+            # THE SUPPORT FUNCTION MUST RESPECT THE SYMMETRY, or the symmetry is not there.
+            #
+            # A cylinder's support along direction c is  r*sqrt(cx^2 + cy^2) + h*|cz|, which depends
+            # on c only through its radial magnitude -- rotationally invariant about the axis, as it
+            # must be. Using the BOX support sum_i |c_i| h_i here instead is wrong and not harmlessly
+            # so: |cos t| + |sin t| varies with the azimuth t, so it makes grasp outcomes depend on
+            # the cylinder's yaw. That silently destroys the very outcome-invariance Theorem 4 is
+            # about, and `dim ker J` collapsed from 1 to 0 -- the framework's headline identifiability
+            # result, deleted by a support function copied from the wrong shape.
+            radial = c_obj[..., :2].norm(dim=-1)
+            extent = radial * half[:, 0].unsqueeze(1) + c_obj[..., 2].abs() * half[:, 2].unsqueeze(1)
+        else:
+            extent = (c_obj.abs() * half.unsqueeze(1)).sum(-1)  # box: sum_i |c_i| h_i
+
+        jaw = self.JAW_INNER_HALF_WIDTH - extent
+
+        # Floor and palm clearance, in world z. The object rests on the table, so its centre sits
+        # at half_z above the floor and the floor is at -half_z relative to that centre.
+        half_z = half[:, 2].unsqueeze(1)  # (B,1)
+        floor = (tcp[..., 2] - self.FINGER_BELOW_TCP) - (-half_z)
+        palm = (tcp[..., 2] + self.PALM_ABOVE_TCP) - half_z
+
+        return torch.minimum(torch.minimum(jaw, floor), palm)
+
     def outcome_params(self, state: Tensor, actions: Tensor) -> Tensor:
         """Phi(x) = (succ_logit, margin, log_slip) per action, flattened. Differentiable."""
         eps, slip = self._epsilon_quality(state, actions)
-        # A calibrated-ish logit: how far past the quality threshold the grasp is.
-        succ_logit = 60.0 * (eps - self.eps_threshold)
+        clear = self._reachability(state, actions)
+
+        # A grasp succeeds if it is BOTH force-closed AND executable. Both terms are smooth, so
+        # Phi stays differentiable and J(x) is still available by autodiff.
+        quality_logit = 60.0 * (eps - self.eps_threshold)
+        reach_logit = 300.0 * clear
+        succ_logit = torch.minimum(quality_logit, reach_logit)
+
         margin = eps
         log_slip = torch.log(slip.clamp_min(1e-4))
         stacked = torch.stack([succ_logit, margin, log_slip], dim=-1)  # (B, Na, 3)
@@ -353,7 +423,13 @@ class AnalyticGraspOracle(PhysicsOracle):
     @torch.no_grad()
     def query(self, state: Tensor, actions: Tensor) -> Outcome:
         eps, slip = self._epsilon_quality(state, actions)
-        p = torch.sigmoid(60.0 * (eps - self.eps_threshold))
+        clear = self._reachability(state, actions)
+        # Same success rule as `outcome_params`: force-closed AND executable. If the two ever
+        # disagree, the Jacobian would be the Jacobian of a different operator than the one that
+        # produced the labels, and C2 would be measuring a fiction.
+        logit = torch.minimum(60.0 * (eps - self.eps_threshold), 300.0 * clear)
+        p = torch.sigmoid(logit)
+        slip = torch.where(clear < 0, torch.full_like(slip, 0.5), slip)
 
         if self.noise:
             succ = torch.bernoulli(p)
@@ -377,8 +453,15 @@ class AnalyticGraspOracle(PhysicsOracle):
         g = generator
         x = torch.zeros(n, STATE_DIM)
         x[:, STATE_SLICES["pose_t"]] = torch.randn(n, 3, generator=g) * 0.02
-        x[:, STATE_SLICES["pose_r"]] = torch.randn(n, 3, generator=g) * 0.4
-        x[:, STATE_SLICES["log_size"]] = math.log(0.03) + torch.randn(n, 3, generator=g) * 0.25
+
+        # YAW ONLY. An object resting on a table cannot be tilted: it lies flat on a face. Sampling
+        # a free 3-DoF rotation produced boxes tipped by up to 40 degrees while still being placed
+        # at their UNROTATED resting height, so they started the episode interpenetrating the table
+        # -- and the gripper, aimed at a pose the object was not actually in, drove its fingers 10 mm
+        # into the object. This is a scene-physics error masquerading as a grasping failure.
+        x[:, STATE_SLICES["pose_r"]] = 0.0
+        x[:, 5] = (torch.rand(n, generator=g) * 2 - 1) * math.pi  # yaw about world z
+        x[:, STATE_SLICES["log_size"]] = math.log(0.028) + torch.randn(n, 3, generator=g) * 0.15
         x[:, STATE_SLICES["log_friction"]] = math.log(0.6) + torch.randn(n, 1, generator=g) * 0.3
         x[:, STATE_SLICES["log_mass"]] = math.log(0.3) + torch.randn(n, 1, generator=g) * 0.5
         x[:, STATE_SLICES["com"]] = torch.randn(n, 3, generator=g) * 0.004
@@ -402,19 +485,35 @@ class AnalyticGraspOracle(PhysicsOracle):
         # A uniform prior over SE(3) would put essentially all of its mass on grasps that miss
         # the object entirely, which carry no information about x -- the labels would be a
         # constant 0 and Assumption A8 (informative outcomes) would fail.
-        axis_id = torch.randint(0, 3, (b, n_actions), generator=generator, device=dev)
+        axis_id = torch.randint(0, 2, (b, n_actions), generator=generator, device=dev)
         axes = torch.eye(3, device=dev)[axis_id]  # (B, Na, 3), object frame
         axes = torch.einsum("bij,bnj->bni", R_obj, axes)  # world frame
-        axes = axes + 0.25 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
+        axes = axes + 0.12 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
         axes = axes / axes.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
-        # Build a quaternion whose local +x is `axes`.
-        ref = torch.zeros_like(axes)
-        ref[..., 2] = 1.0
-        ref = torch.where(axes[..., 2:3].abs() > 0.9, torch.roll(ref, 1, -1), ref)
-        y_ax = torch.cross(ref, axes, dim=-1)
+        # Build the gripper frame. Local +x is the closing axis; the remaining roll about it is
+        # NOT free, and choosing it arbitrarily is a mistake with real consequences.
+        #
+        # The gripper reaches along its local -z (the fingers hang below the palm). If the roll is
+        # picked at random, that approach direction points sideways or straight up as often as
+        # down, so the hand is placed inside the table or reaching out of it, and the grasp is not
+        # executable at all. Measured against the simulator, an arbitrary roll had ~96% of grasps
+        # rejected for collision at placement.
+        #
+        # So we pick the roll that makes the approach as close to TOP-DOWN as the closing axis
+        # allows: local +z is the component of world +z orthogonal to the closing axis. This is a
+        # top-down antipodal grasp, which is what a table-top parallel-jaw gripper actually does.
+        world_z = torch.zeros_like(axes)
+        world_z[..., 2] = 1.0
+        z_ax = world_z - (world_z * axes).sum(-1, keepdim=True) * axes
+        # If the closing axis IS vertical, any roll is equivalent; fall back to world +x.
+        degenerate = z_ax.norm(dim=-1, keepdim=True) < 1e-3
+        fallback = torch.zeros_like(axes)
+        fallback[..., 0] = 1.0
+        z_ax = torch.where(degenerate, fallback, z_ax)
+        z_ax = z_ax / z_ax.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        y_ax = torch.cross(z_ax, axes, dim=-1)
         y_ax = y_ax / y_ax.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        z_ax = torch.cross(axes, y_ax, dim=-1)
         R = torch.stack([axes, y_ax, z_ax], dim=-1)  # (B, Na, 3, 3), columns
 
         tr = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
@@ -425,8 +524,17 @@ class AnalyticGraspOracle(PhysicsOracle):
         q = torch.stack([w, qx, qy, qz], dim=-1)
         q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
-        pos = t_obj.unsqueeze(1) + 0.015 * torch.randn(
-            b, n_actions, 3, generator=generator, device=dev
+        # Grasp the UPPER HALF of the object. A table-top gripper straddles the top of an object;
+        # aiming the tool centre point at the object's CENTRE drives the fingertips below the table
+        # for anything short, and the grasp is then rejected for hitting the floor before it is ever
+        # simulated. That single mistake accounted for the largest share of placement collisions.
+        half_h = torch.exp(state[:, STATE_SLICES["log_size"]][:, 2]).clamp(0.018, 0.038)
+        lift = torch.zeros(b, n_actions, 3, device=dev)
+        lift[..., 2] = 0.5 * half_h.unsqueeze(1)
+        pos = (
+            t_obj.unsqueeze(1)
+            + lift
+            + 0.006 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
         )
         return torch.cat([pos, q], dim=-1)
 

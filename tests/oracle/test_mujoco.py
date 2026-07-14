@@ -65,22 +65,44 @@ def test_the_simulator_is_not_differentiable_and_says_so(rollouts) -> None:
         sim.outcome_params(x, a)
 
 
-@pytest.mark.xfail(
-    reason=(
-        "KNOWN DEFECT, not a tolerance issue. A successfully-lifted object should be carried "
-        "rigidly by the hand, so its displacement RELATIVE to the hand should be ~0. We measure "
-        "~0.10 m: the object is sliding through the fingers during the lift even when it clears "
-        "the success height. Either the grip force, the finger friction, or the weld stiffness is "
-        "wrong. Until this passes, MuJoCoOracle must not produce a number for the paper."
-    ),
-    strict=True,
-)
 def test_slip_is_near_zero_for_a_successful_grasp(rollouts) -> None:
+    """REGRESSION -- this test failed for a long time, and each cause was a real bug.
+
+    A successfully-lifted object is carried RIGIDLY by the hand, so its displacement relative to
+    the hand must be ~0. It was measuring ~0.10 m. Four separate defects, in the order they were
+    found:
+
+      1. Slip was measured against the MOCAP TARGET rather than the hand. The weld is a soft
+         constraint, so the hand lags the target; that lag was attributed to the object.
+      2. The gripper was teleported INTO the object (12 contacts at placement). MuJoCo resolved
+         the overlap with an enormous impulse and launched the object 13 cm into the air -- and
+         some of those flights cleared the success threshold, so the simulator was scoring
+         explosions as successful grasps.
+      3. The hand ORIGIN was placed at the grasp point, not the tool centre point, burying the
+         palm inside the object.
+      4. Objects were sampled with a free 3-DoF rotation but placed at their UNROTATED resting
+         height, so they began the episode already inside the table. A box on a table can only yaw.
+    """
     _, _, _, _, y = rollouts
     held = y.succ.squeeze(-1) == 1
     assert held.any(), "no successful grasps to check"
-    slip_when_held = y.slip.squeeze(-1)[held].mean()
-    assert float(slip_when_held) < 0.02
+    slip_when_held = float(y.slip.squeeze(-1)[held].mean())
+    assert slip_when_held < 0.02, (
+        f"slip on SUCCESSFUL grasps is {slip_when_held:.4f} m. A carried object does not "
+        "translate relative to the hand."
+    )
+
+
+def test_a_colliding_grasp_pose_is_rejected_not_simulated(rollouts) -> None:
+    """A grasp whose OPEN jaws already intersect the scene is not executable. Stepping the
+    simulator from that state does not model a bad grasp, it models a penetration blow-up."""
+    _, sim, _, _, y = rollouts
+    rejected = (y.slip.squeeze(-1) >= sim.COLLISION_SLIP - 1e-6)
+    assert float(rejected.float().mean()) < 0.8, (
+        "nearly every grasp pose is colliding -- the gripper geometry or the action sampler is "
+        "wrong, not the physics"
+    )
+    assert float(rejected.float().mean()) > 0.0, "no grasp ever collides; is the check running?"
 
 
 # --------------------------------------------------------------------------------------
