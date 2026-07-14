@@ -179,6 +179,40 @@ $\beta$ & Rate $R$ & Distortion $D$ & Coverage \\
     log.info("wrote tab_frontier.tex")
 
 
+def table_active(results: Path, out: Path) -> None:
+    """Table: contribution C3, reported honestly. The 'oracle best' row is included ON PURPOSE and
+    labelled as invalid, so a reader can see exactly how large the winner's curse was."""
+    r = _load(results, "e6_active.json")
+    if not r:
+        return
+    tex = HEADER.format(src="e6_active.json") + rf"""
+\begin{{table}}[t]
+\centering
+\caption{{Active perception (Section~\ref{{sec:active}}). Ambiguity reduction is the fractional drop
+in $U(o)$ from acquiring a second viewpoint. \emph{{Honest best}} selects the viewpoint using one
+Monte-Carlo estimate of the information gain and scores it with an \emph{{independent}} one;
+\emph{{oracle best}} selects and scores on the same estimate and is therefore inflated by the
+winner's curse. We report the former. Note that most of the benefit comes from taking a second view
+at all ({r['reduction_random'] * 100:.1f}\%); \emph{{choosing}} which view adds
+{{{(r['reduction_honest'] - r['reduction_random']) * 100:.1f}}} points.}}
+\label{{tab:active}}
+\begin{{tabular}}{{lr}}
+\toprule
+Viewpoint policy & Ambiguity reduction \\
+\midrule
+Random second view          & {r['reduction_random'] * 100:.1f}\% \\
+\textbf{{Honest best}}        & \textbf{{{r['reduction_honest'] * 100:.1f}\%}} \\
+\midrule
+\emph{{Oracle best (invalid)}} & \emph{{{r['reduction_oracle_biased'] * 100:.1f}\%}} \\
+\quad of which selection noise & {r['selection_bias'] * 100:.1f} pts \\
+\bottomrule
+\end{{tabular}}
+\end{{table}}
+"""
+    (out / "tab_active.tex").write_text(tex)
+    log.info("wrote tab_active.tex")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", type=Path, default=Path("results"))
@@ -190,6 +224,7 @@ def main() -> None:
     table_identifiability(args.results, args.out)
     table_ablations(args.results, args.out)
     table_frontier(args.results, args.out)
+    table_active(args.results, args.out)
     log.info("tables -> %s", args.out)
 
 

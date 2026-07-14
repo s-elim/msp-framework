@@ -20,6 +20,7 @@ from msp.math.conformal import (
     nonconformity_scores,
     prediction_set,
 )
+from msp.math.voi import acquisition_loss, information_gain
 from msp.math.decision import SuccessStats, ambiguity, risk_averse_score, success_stats
 from msp.math.divergences import (
     diagonal_gaussian_kl,
@@ -34,6 +35,7 @@ __all__ = [
     "AdaptiveConformalState", "conformal_quantile", "min_calibration_size",
     "nonconformity_scores", "prediction_set",
     "SuccessStats", "ambiguity", "risk_averse_score", "success_stats",
+    "acquisition_loss", "information_gain",
     "diagonal_gaussian_kl", "gaussian_nll", "kl_to_standard_normal", "log_normal_nll",
     "zero_inflated_lognormal_nll",
 ]

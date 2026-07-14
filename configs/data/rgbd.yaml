@@ -6,6 +6,8 @@ n_val: 2000
 n_calib: 4000     # MUST be disjoint from train (Assumption A5); the calibrator enforces it
 n_test: 4000
 n_actions: 8
+n_views: 8          # |B| -- the sensing action space. 1 = passive (single fixed camera).
+max_train_views: 3  # encoder sees 1..3 views per scene during training, so it can use a second one
 image_size: 96
 shape: box        # box | cylinder.  Theorem 4 is VACUOUS for a box (rank J = d_X); use a
                   # cylinder for the identifiability experiment, where dim ker J = 1.

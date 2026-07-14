@@ -113,6 +113,21 @@ class SyntheticGraspDataset(Dataset[dict[str, Tensor]]):
 
 
 def collate(items: list[dict[str, Tensor]]) -> dict[str, Tensor]:
+    # Scenes in a multi-view batch may carry DIFFERENT numbers of views (the dataset samples a
+    # random count per scene, so the encoder learns to use however many it gets). A batch must be
+    # rectangular, so we pad up to the maximum by REPEATING views already present. Repetition is
+    # safe precisely because the encoder aggregates views with a permutation-invariant mean: a
+    # duplicate view contributes nothing new, which is the same reason the product-of-Gaussians
+    # fusion had to be abandoned.
+    first = items[0]["observation"]
+    if first.dim() in (3, 4) and any(it["observation"].shape[0] != first.shape[0] for it in items):
+        vmax = max(it["observation"].shape[0] for it in items)
+        for it in items:
+            o = it["observation"]
+            if o.shape[0] < vmax:
+                pad = o[torch.randint(0, o.shape[0], (vmax - o.shape[0],))]
+                it["observation"] = torch.cat([o, pad], dim=0)
+
     out = {k: torch.stack([it[k] for it in items]) for k in items[0]}
     # Re-normalize the importance weights WITHIN the batch, since the loss reduces per batch.
     w = out["weights"]

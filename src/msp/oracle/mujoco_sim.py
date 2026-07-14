@@ -105,11 +105,19 @@ _MJCF = """
     <geom name="floor" type="plane" size="1 1 0.05" pos="0 0 0" friction="1 0.02 0.001"
           material="grid_mat"/>
 
-    <!-- The RGB-D sensor. Mounted off-axis and looking down at the workspace, like a wrist- or
-         shoulder-mounted RealSense. Its pose is FIXED and part of the model, so o = render(x) is a
-         well-defined observation kernel p(o|x) rather than a free parameter of the experiment. -->
-    <camera name="rgbd" pos="0.17 -0.17 0.20" xyaxes="0.707 0.707 0 -0.43 0.43 0.79"
-            fovy="48"/>
+    <!-- THE SENSING ACTION SPACE B (Section 5).
+         A ring of RGB-D viewpoints around the workspace. `view0` is the default observation;
+         moving to any other view is a sensing action b, and the question active perception exists
+         to answer is WHICH one. Their poses are fixed and part of the model, so both p(o|x) and
+         the set B are properties of the world rather than free parameters of the experiment. -->
+    <camera name="view0" pos="0.2400 0.0000 0.2600" xyaxes="0.0000 1.0000 0.0000 -0.7348 0.0000 0.6783" fovy="48"/>
+    <camera name="view1" pos="0.1697 0.1697 0.2600" xyaxes="-0.7071 0.7071 0.0000 -0.5196 -0.5196 0.6783" fovy="48"/>
+    <camera name="view2" pos="0.0000 0.2400 0.2600" xyaxes="-1.0000 0.0000 0.0000 -0.0000 -0.7348 0.6783" fovy="48"/>
+    <camera name="view3" pos="-0.1697 0.1697 0.2600" xyaxes="-0.7071 -0.7071 0.0000 0.5196 -0.5196 0.6783" fovy="48"/>
+    <camera name="view4" pos="-0.2400 0.0000 0.2600" xyaxes="-0.0000 -1.0000 0.0000 0.7348 -0.0000 0.6783" fovy="48"/>
+    <camera name="view5" pos="-0.1697 -0.1697 0.2600" xyaxes="0.7071 -0.7071 0.0000 0.5196 0.5196 0.6783" fovy="48"/>
+    <camera name="view6" pos="-0.0000 -0.2400 0.2600" xyaxes="1.0000 -0.0000 0.0000 0.0000 0.7348 0.6783" fovy="48"/>
+    <camera name="view7" pos="0.1697 -0.1697 0.2600" xyaxes="0.7071 0.7071 -0.0000 -0.5196 0.5196 0.6783" fovy="48"/>
 
     <body name="object" pos="0 0 0.05">
       <freejoint name="obj"/>
@@ -372,6 +380,9 @@ class MuJoCoOracle(PhysicsOracle):
 
     # -- the observation kernel p(o | x) --------------------------------------
 
+    #: Number of viewpoints in the ring. |B| = N_VIEWS; view 0 is the default observation.
+    N_VIEWS: int = 8
+
     @torch.no_grad()
     def render(
         self,
@@ -380,6 +391,7 @@ class MuJoCoOracle(PhysicsOracle):
         width: int = 128,
         depth_noise: float = 0.002,
         max_depth: float = 1.5,
+        view: int = 0,
     ) -> Tensor:
         """Render RGB-D observations of the scene. This is p(o | x): the sensor model.
 
@@ -429,6 +441,10 @@ class MuJoCoOracle(PhysicsOracle):
         # MuJoCo exposes geometry as mutable arrays on the model, so we compile once with a
         # placeholder object and then write the per-scene size directly into `geom_size`. The
         # renderer never notices, because the model object is the same one it was bound to.
+        if not 0 <= view < self.N_VIEWS:
+            raise ValueError(f"view must be in [0, {self.N_VIEWS}); got {view}")
+        cam_name = f"view{view}"
+
         m = self._model(half[0], float(mass[0, 0]), float(mu[0, 0]), com[0])
         r = self._renderer(m, height, width)
         gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "obj_geom")
@@ -454,11 +470,11 @@ class MuJoCoOracle(PhysicsOracle):
             mujoco.mj_forward(m, d)
 
             r.disable_depth_rendering()
-            r.update_scene(d, camera="rgbd")
+            r.update_scene(d, camera=cam_name)
             rgb = torch.from_numpy(r.render().copy()).float() / 255.0  # (H, W, 3)
 
             r.enable_depth_rendering()
-            r.update_scene(d, camera="rgbd")
+            r.update_scene(d, camera=cam_name)
             dep = torch.from_numpy(r.render().copy()).float()  # (H, W), metres
             r.disable_depth_rendering()
 

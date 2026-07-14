@@ -17,6 +17,11 @@ EXPERIMENTS
       no-TTA, risk-neutral selection
   E5  Latent dimension sweep                    -> the "lower-dimensional" clause of the
                                                    scientific hypothesis
+  E6  Active perception, BIAS-CORRECTED         -> contribution C3. Reports the honest gain from
+                                                   choosing a viewpoint, not the winner's-curse
+                                                   number. See diagnostics/active_eval.py -- on the
+                                                   RGB-D corpus, 25 of an apparent 43 points of
+                                                   ambiguity reduction were selection noise.
 
 Every result is a hypothesis under test, not a foregone conclusion. If E1 shows distortion
 does not fall with beta, or E3 shows coverage below nominal, the script reports it plainly.
@@ -254,6 +259,48 @@ def e5_latent_dim(oracle, loaders, device, out: Path, epochs: int) -> list[dict]
     return rows
 
 
+def e6_active_perception(device, out: Path, epochs: int) -> dict:
+    """E6: contribution C3, reported honestly.
+
+    Requires the RGB-D corpus (the sensing action space B is a ring of rendered viewpoints), so it
+    is skipped on the synthetic world. The number that goes in the paper is `reduction_honest`:
+    select the viewpoint with one Monte Carlo estimate of IG, then score it with an INDEPENDENT
+    one. Taking a max over |B| noisy estimates and scoring on the same estimate is the winner's
+    curse and inflates the result by ~25 points.
+    """
+    import os
+
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    from torch.utils.data import DataLoader
+
+    from msp.data import CorpusSpec, RGBDGraspDataset, collate, generate_corpus
+    from msp.diagnostics import evaluate_active_perception
+
+    log.info("=== E6: active perception (bias-corrected) ===")
+    spec = CorpusSpec(n_scenes=4000, n_actions=8, shape="box", image_size=96, seed=1,
+                      use_simulator=True, n_views=8)
+    ds = RGBDGraspDataset(generate_corpus(spec, out / "corpus"), max_train_views=3)
+
+    seed_everything(0)
+    from msp.models import ResNetBackbone
+    enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=32)
+    head = OutcomeHead(latent_dim=32, action_dim=ACTION_DIM)
+    dl = DataLoader(ds, batch_size=64, shuffle=True, collate_fn=collate)
+    cfg = TrainConfig(epochs=epochs, lr=1e-3, warmup_epochs=2,
+                      amp_dtype="bf16" if device.type == "cuda" else "off",
+                      beta=BetaSchedule.uniform(30.0), out_dir=str(out / "e6"))
+    Trainer(enc, head, dl, None, cfg, device).fit()
+    enc.eval(); head.eval()
+
+    n = min(512, len(ds))
+    idx = torch.arange(n)
+    rep = evaluate_active_perception(
+        enc, head, ds.all_views(idx).to(device), ds.actions[idx].to(device)
+    )
+    log.info("\n%s", rep.summary())
+    return asdict(rep)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("results"))
@@ -273,7 +320,7 @@ def main() -> None:
     oracle = SyntheticOracle(state_dim=6, rank=3, action_dim=ACTION_DIM, seed=0)
     loaders = _loaders(oracle, scale=0.2 if args.quick else 1.0)
 
-    want = set(args.only or ["e1", "e2", "e3", "e4", "e5"])
+    want = set(args.only or ["e1", "e2", "e3", "e4", "e5", "e6"])
     ckpt = args.out / "_ckpt"
 
     if "e2" in want:  # cheapest and most important: run it first
@@ -291,6 +338,9 @@ def main() -> None:
     if "e5" in want:
         (args.out / "e5_latent_dim.json").write_text(
             json.dumps(e5_latent_dim(oracle, loaders, device, ckpt, args.epochs), indent=2))
+    if "e6" in want:
+        (args.out / "e6_active.json").write_text(
+            json.dumps(e6_active_perception(device, args.out, args.epochs), indent=2))
 
     log.info("results written to %s", args.out)
 

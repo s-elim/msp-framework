@@ -146,10 +146,16 @@ def _build_rgbd_loaders(cfg: Any) -> dict[str, DataLoader[Any]]:
                 image_size=d.image_size,
                 seed=seed,
                 use_simulator=d.use_simulator,
+                n_views=d.get("n_views", 1),
             ),
             cache,
         )
-        ds = RGBDGraspDataset(path)
+        # Only the TRAINING fold sees a random view count -- evaluation must be a fixed,
+        # reproducible protocol, and the look-ahead supplies its own views explicitly.
+        ds = RGBDGraspDataset(
+            path,
+            max_train_views=d.get("max_train_views", 1) if name == "train" else 1,
+        )
         sampler = None
         if is_distributed() and name == "train":
             sampler = DistributedSampler(ds, shuffle=True, drop_last=True)
