@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from msp.diagnostics import compare_selective, risk_coverage
+from msp.diagnostics import compare_selective, risk_coverage, roc_auc, within_scene_auc
 
 
 def _perfect(n: int = 200, na: int = 8) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -103,3 +103,54 @@ def test_random_pick_control_is_reported() -> None:
     assert abs(cmp_.analytic.top1_success - cmp_.random_pick) < 0.12
     assert cmp_.msp.top1_success > cmp_.analytic.top1_success + 0.2
     assert "random pick" in cmp_.summary()
+
+
+# --------------------------------------------------------------------------------------
+# the metric that exposed the model bug
+# --------------------------------------------------------------------------------------
+
+
+def test_a_pooled_auc_can_be_pure_object_recognition() -> None:
+    """REGRESSION -- THE METRIC THAT LIED.
+
+    Two objects with very different base success rates. A scorer that knows ONLY which object it is
+    looking at -- and is deliberately given the WRONG ranking within each object -- still posts a
+    strong POOLED AUC, because the between-object variation does all the work. Its within-scene AUC
+    exposes it as worse than chance.
+
+    This is not hypothetical. MSP scored a pooled AUC of 0.716 while its within-scene AUC was 0.524,
+    i.e. chance: it could not rank two grasps of the same object. The LIBERO base rates run from
+    0.043 (macaroni) to 0.999 (bbq_sauce), so 'which grocery is this?' is worth ~0.72 on its own.
+    The pooled number reported a broken model as a working one.
+    """
+    # Base rates as lopsided as the real corpus (0.043 macaroni vs 0.999 bbq_sauce).
+    easy_y = torch.tensor([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]])  # base rate 0.875
+    hard_y = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])  # base rate 0.125
+    succ = torch.cat([easy_y.repeat(50, 1), hard_y.repeat(50, 1)])
+
+    # Knows the object (high score on the easy one), but ranks WITHIN each object BACKWARDS:
+    # the lone failure gets the top score, the lone success gets the bottom one.
+    easy_s = torch.tensor([[0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.95]])
+    hard_s = torch.tensor([[0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.05]])
+    score = torch.cat([easy_s.repeat(50, 1), hard_s.repeat(50, 1)])
+
+    ex = torch.ones_like(succ, dtype=torch.bool)
+
+    pooled = roc_auc(score.flatten().numpy(), succ.flatten().numpy())
+    within = within_scene_auc(score, succ, ex)
+
+    assert pooled > 0.70, "the object-identity shortcut should look good on a pooled AUC"
+    assert within < 0.40, "and be worse than chance at the task that matters"
+    assert pooled - within > 0.30, (
+        "a pooled AUC and a within-scene AUC must be able to disagree wildly -- that gap is the "
+        "whole reason the within-scene number has to be reported"
+    )
+
+
+def test_within_scene_auc_ignores_degenerate_and_unreachable() -> None:
+    """A scene with one outcome, or too few reachable grasps, poses no ranking problem."""
+    succ = torch.tensor([[1.0, 1.0, 1.0, 1.0], [1.0, 0.0, 1.0, 0.0]])
+    score = torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.9, 0.1, 0.8, 0.2]])
+    ex = torch.ones_like(succ, dtype=torch.bool)
+    # scene 0 is all-success (skipped); scene 1 is ranked perfectly
+    assert within_scene_auc(score, succ, ex) == pytest.approx(1.0)

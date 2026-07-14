@@ -132,6 +132,36 @@ class TrainConfig:
     #: what proves the encoder was never the problem.
     train_samples: int = 8
 
+    #: Epochs over which the rate term R is annealed 0 -> 1 (KL warmup). Reaches 1.0, so the final
+    #: objective IS Eq 10. See `msp.math.bottleneck.vib_objective`.
+    kl_warmup_epochs: int = 15
+
+    #: Epochs trained with a DETERMINISTIC belief (z = mu, no posterior sampling) before the
+    #: stochastic objective is switched on. This is an INITIALIZATION schedule, not a change to the
+    #: objective: after it, training is exactly Eq 10.
+    #:
+    #: THE ORDER IN WHICH THINGS ARE LEARNED DECIDES WHETHER THIS MODEL WORKS AT ALL.
+    #:
+    #: Whether a grasp holds depends on the ANGLE between the jaws and the object -- an interaction
+    #: between the action and the POSE carried in z. At initialization z is noise, so that
+    #: interaction is unlearnable, and the head converges within an epoch or two to the only thing
+    #: available without it: the per-object base success rate. It then IGNORES THE ACTION, dD/dsigma
+    #: collapses to ~0, nothing opposes the rate term, and sigma parks at the prior. The loop is
+    #: self-sustaining and it is a hard fixed point -- sigma came out at 0.932-0.935 under beta=30,
+    #: beta=300, and KL annealing alike, i.e. the objective could not move it.
+    #:
+    #: What that costs: within-scene AUC 0.524 (chance) -- the model cannot say which of an object's
+    #: own 8 candidate grasps will work; prediction std across them is 0.003 against 0.415 in the
+    #: truth. It LOOKED fine, because the pooled AUC read 0.716 -- on a corpus whose per-object base
+    #: rates run from 0.043 to 0.999, a pooled AUC rewards recognising the object.
+    #:
+    #: That the belief was never the problem is settled by fitting a FRESH head to the FROZEN
+    #: encoder's mean: within-scene AUC 0.715, ABOVE the 0.685 an oracle MLP gets from the TRUE
+    #: state. The information is in mu. Only the joint optimisation fails to reach it.
+    #:
+    #: So the head is given a clean z first, learns the interaction, and only then meets the noise.
+    deterministic_warmup_epochs: int = 10
+
 
 class Trainer:
     def __init__(
@@ -208,9 +238,12 @@ class Trainer:
         # --- network: reduced precision is fine here ---
         with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
             belief = self.encoder(obs)
-            k = self.cfg.train_samples
-            z = belief.rsample(k)  # (B, K, d) -- K > 1; see TrainConfig.train_samples
+            if self._deterministic_now():
+                z = belief.mu.unsqueeze(1)  # (B, 1, d) -- clean z; see deterministic_warmup_epochs
+            else:
+                z = belief.rsample(self.cfg.train_samples)  # (B, K, d)
             pred = self.head(z, actions)  # (B, K, Na, 6)
+            k = z.shape[1]
 
         # --- loss: fp32, always. These numbers get PLOTTED. ---
         with torch.autocast("cuda", enabled=False):
@@ -221,7 +254,31 @@ class Trainer:
                 belief.logvar.float(),
                 self.cfg.beta,
                 weights=weights,
+                rate_weight=self._rate_weight_at(self.epoch),
             )
+
+    def _deterministic_now(self) -> bool:
+        """True during the deterministic warmup. Validation is ALWAYS stochastic, so the reported
+        val distortion and the frontier point are the true Eq-10 quantities from the first epoch."""
+        return self.encoder.training and self.epoch < self.cfg.deterministic_warmup_epochs
+
+    def _rate_weight_at(self, epoch: int) -> float:
+        """KL warmup: R is annealed 0 -> 1 so the head can learn to USE z before the rate term is
+        allowed to push the posterior back to the prior. Validation runs at full weight, so the
+        reported frontier point is always the true Eq-10 one.
+
+        R is held at ZERO through the deterministic warmup. There is nothing for it to trade against
+        yet -- z is not being sampled, so the rate buys no robustness -- and letting it run would
+        simply shrink mu toward the prior while the head is still learning to read it."""
+        if not self.encoder.training:
+            return 1.0
+        d = self.cfg.deterministic_warmup_epochs
+        if epoch < d:
+            return 0.0
+        w = self.cfg.kl_warmup_epochs
+        if w <= 0:
+            return 1.0
+        return min(1.0, (epoch - d + 1) / float(w))
 
     def train_epoch(self) -> dict[str, float]:
         self.encoder.train()

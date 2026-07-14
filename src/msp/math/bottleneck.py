@@ -72,8 +72,45 @@ class BetaSchedule:
 
     @classmethod
     def uniform(cls, beta: float) -> BetaSchedule:
-        """The scalar-beta case of Eq 10, applied to every outcome dimension."""
+        """The scalar-beta case of Eq 10, applied to every outcome dimension.
+
+        WARNING -- THIS IS ALMOST NEVER WHAT YOU WANT, AND IT SILENTLY BREAKS THE MODEL.
+
+        The three D_j are negative log-likelihoods on INCOMMENSURATE SCALES: D_succ is a Bernoulli
+        BCE (~0.6 nats), D_slip a zero-inflated log-normal (~3.9), D_margin a Gaussian NLL of a
+        continuous quantity. An equal beta is therefore NOT an equal budget -- capacity is handed out
+        in proportion to the accidental magnitude of each likelihood, and `succ`, the only outcome
+        the decision rule of Eq 13/24 ever reads, is the smallest of the three.
+
+        What that did, measured: the shared trunk optimised for slip and margin, the head stopped
+        attending to the action entirely (prediction std across a scene's 8 candidate grasps: 0.002,
+        against 0.415 in the truth), and within-scene AUC sat at 0.504 -- chance. Re-weighting to
+        beta_succ = 300, beta_margin = beta_slip = 0.01 takes it to 0.640 against an oracle ceiling
+        of 0.685, and the action-response std to 0.220. Nothing else moved it: not beta's magnitude
+        (30 -> 300 -> 1000), not K (1 -> 8), not a FiLM head, not the marginal-likelihood loss, not
+        KL annealing, not a deterministic warmup.
+
+        There is also a CONCEPTUAL trap here, and it is worse than the numerical one. On the LIBERO
+        corpus `margin` IS the Ferrari-Canny epsilon computed on the bounding box -- the analytic
+        proxy this paper exists to discredit. A uniform beta spends most of the belief's capacity
+        making it sufficient for precisely the quantity the paper proves is uninformative about
+        whether the object is lifted.
+
+        Use `sufficiency_for_success` unless you have a reason not to, and if you do reach for a
+        genuinely uniform budget, normalize the D_j first.
+        """
         return cls(succ=beta, margin=beta, slip=beta)
+
+    @classmethod
+    def sufficiency_for_success(cls, beta: float = 300.0) -> BetaSchedule:
+        """The sensible default: spend the sufficiency budget on the outcome the DECISION reads.
+
+        `succ` is what Eq 13 marginalizes and Eq 24 certifies. `margin` and `slip` are auxiliary
+        regression targets kept at a small weight -- enough that the outcome family is still
+        three-dimensional (Theorem 4's Jacobian needs it) without letting their much larger NLLs
+        drown the Bernoulli term. See `uniform` for what happens when they do.
+        """
+        return cls(succ=beta, margin=0.01, slip=0.01)
 
 
 @dataclass(frozen=True)
@@ -213,6 +250,7 @@ def vib_objective(
     logvar: Tensor,
     beta: BetaSchedule,
     weights: Tensor | None = None,
+    rate_weight: float = 1.0,
 ) -> VIBTerms:
     """The full training loss. Formalization Eq 7 (per-dimension form), Eq 10, Eq 11::
 
@@ -233,7 +271,26 @@ def vib_objective(
     d = distortion(pred, target, weights=weights)
     r = rate(mu, logvar, weights=None)  # rate is per-scene; action weights do not apply
 
-    loss = d.weighted_sum(beta) + r
+    # `rate_weight` is a TRAINING-SCHEDULE device and must reach 1.0, at which point this is exactly
+    # Eq 10 and the reported frontier point is the real one. It exists to escape POSTERIOR COLLAPSE.
+    #
+    # The rate term R = KL(q||N(0,I)) pulls sigma -> 1 and mu -> 0. The distortion is supposed to
+    # pull back -- but it only can if the head USES the fine structure of z, and early in training it
+    # cannot: z is noise. So the head learns to be robust to z, dD/dsigma goes to ~0, nothing opposes
+    # R, and sigma parks at the prior. Measured: sigma = 0.935 against |mu| = 0.331, i.e. the noise is
+    # three times the signal, and this is a FIXED POINT -- raising beta from 30 to 300 left sigma at
+    # 0.935, because beta multiplies a distortion whose gradient w.r.t. sigma is already zero.
+    #
+    # The damage is specific: grasp success depends on the ANGLE between the jaws and the object, an
+    # interaction between the action and the POSE inside z. Through a noise-dominated z that
+    # interaction cannot form, so the head discards the action and predicts the per-object base rate.
+    # On the SAME frozen encoder, feeding z = mu gives within-scene AUC 0.715; feeding sampled z
+    # gives 0.567; and end-to-end it is 0.524, i.e. chance.
+    #
+    # Annealing R in from zero lets the head learn the interaction while sigma is still free to be
+    # small. Once dD/dsigma is nonzero, the two terms can actually negotiate, which is what Eq 10
+    # always assumed they were doing.
+    loss = d.weighted_sum(beta) + rate_weight * r
     total_d = d.succ + d.margin + d.slip
 
     return VIBTerms(loss=loss, rate=r, distortion=d, total_distortion=total_d)

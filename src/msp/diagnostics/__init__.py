@@ -13,6 +13,7 @@ from msp.diagnostics.identifiability import (
     subspace_alignment,
 )
 from msp.diagnostics.selective import (
+    within_scene_auc,
     RiskCoverage,
     SelectiveComparison,
     compare_selective,
@@ -27,6 +28,7 @@ __all__ = [
     "compare_predictors",
     "compare_selective",
     "risk_coverage",
+    "within_scene_auc",
     "roc_auc",
     "IdentifiabilityReport",
     "analyze",

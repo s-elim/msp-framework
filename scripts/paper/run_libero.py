@@ -91,7 +91,7 @@ def train_model(ds, dls, device, epochs: int, beta: float, latent: int, out: Pat
     cfg = TrainConfig(
         epochs=epochs, lr=5e-4, warmup_epochs=3,
         amp_dtype="bf16" if device.type == "cuda" else "off",
-        beta=BetaSchedule.uniform(beta), out_dir=str(out),
+        beta=BetaSchedule.sufficiency_for_success(beta), out_dir=str(out),
     )
     Trainer(enc, head, dls["train"], dls["val"], cfg, device).fit()
     enc.eval()
@@ -107,7 +107,7 @@ def train_model(ds, dls, device, epochs: int, beta: float, latent: int, out: Pat
 def l1_proxy_vs_msp(ds, dls, device, out: Path, epochs: int) -> dict:
     """Does the analytic proxy predict real lift outcomes? Does MSP?"""
     log.info("=== L1: analytic proxy vs MSP, on the REAL lift outcome ===")
-    enc, head = train_model(ds, dls, device, epochs, beta=30.0, latent=64, out=out / "l1")
+    enc, head = train_model(ds, dls, device, epochs, beta=300.0, latent=64, out=out / "l1")
 
     test: LiberoGraspDataset = ds["test"]
     n = len(test)
@@ -139,7 +139,22 @@ def l1_proxy_vs_msp(ds, dls, device, out: Path, epochs: int) -> dict:
         boxlike=boxlike,
     )
     log.info("\n%s", rep.summary())
-    return asdict(rep)
+
+    # THE metric. A pooled AUC over objects whose base success rates run from 0.043 to 0.999 can be
+    # won by RECOGNISING THE OBJECT; MSP once scored 0.716 pooled while its within-scene AUC was
+    # 0.524, i.e. it could not rank two grasps of the same object. Conditioning on the scene holds
+    # the object and its pose fixed, so only the grasp varies. Ceiling: an MLP given the TRUE state
+    # scores 0.685.
+    ws_msp = within_scene_auc(s_msp, test.succ.squeeze(-1), test.executable)
+    ws_an = within_scene_auc(test.margin.squeeze(-1), test.succ.squeeze(-1), test.executable)
+    log.info(
+        "\n  WITHIN-SCENE AUC (rank the candidate grasps of ONE settled pose):\n"
+        "      Ferrari-Canny on the OBB   %.3f\n"
+        "      MSP                        %.3f\n"
+        "      chance 0.500  |  oracle ceiling (MLP on the TRUE state) 0.685",
+        ws_an, ws_msp,
+    )
+    return asdict(rep) | {"within_scene_auc_msp": ws_msp, "within_scene_auc_analytic": ws_an}
 
 
 # ======================================================================================
@@ -221,6 +236,7 @@ def l4_active(ds, dls, device, out: Path, epochs: int) -> dict:
         enc, head, test.all_views(idx).to(device), test.actions[idx].to(device)
     )
     log.info("\n%s", rep.summary())
+
     return asdict(rep)
 
 
@@ -238,7 +254,7 @@ def l5_frontier(ds, dls, device, out: Path, epochs: int) -> list[dict]:
         eng = InferenceEngine(enc, head, cal, InferenceConfig(num_samples=32))
         ev = Evaluator(eng, device)
         ev.calibrate(dls["calib"], cal)
-        r = ev.evaluate(dls["test"], beta=BetaSchedule.uniform(beta))
+        r = ev.evaluate(dls["test"], beta=BetaSchedule.sufficiency_for_success(beta))
         log.info("  beta=%6.1f  rate=%7.3f  distortion=%8.4f +/- %.4f",
                  beta, r.rate, r.distortion, r.distortion_stderr)
         rows.append(asdict(r) | {"beta": beta})
@@ -273,7 +289,7 @@ def l6_ablations(ds, dls, device, out: Path, epochs: int) -> list[dict]:
     head_z = OutcomeHead(latent_dim=64, action_dim=ACTION_DIM)
     cfg = TrainConfig(epochs=epochs, lr=5e-4, warmup_epochs=3,
                       amp_dtype="bf16" if device.type == "cuda" else "off",
-                      beta=BetaSchedule.uniform(30.0), out_dir=str(out / "l6_z"))
+                      beta=BetaSchedule.sufficiency_for_success(300.0), out_dir=str(out / "l6_z"))
     Trainer(enc_z, head_z, dls["train"], dls["val"], cfg, device).fit()
     enc_z.eval(); head_z.eval()
     cal_z = ConformalCalibrator(alpha=0.1, gamma=0.0)

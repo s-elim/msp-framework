@@ -91,7 +91,52 @@ import numpy as np
 import torch
 from torch import Tensor
 
-__all__ = ["RiskCoverage", "SelectiveComparison", "risk_coverage", "compare_selective"]
+__all__ = [
+    "RiskCoverage",
+    "SelectiveComparison",
+    "risk_coverage",
+    "compare_selective",
+    "within_scene_auc",
+]
+
+
+@torch.no_grad()
+def within_scene_auc(score: Tensor, succ: Tensor, executable: Tensor) -> float:
+    """Rank the candidate grasps of ONE settled pose. THE metric; never report a pooled AUC alone.
+
+    A pooled AUC over a corpus of different objects is not a measure of grasp understanding. The
+    LIBERO groceries have per-object base success rates from 0.043 (macaroni) to 0.999 (bbq_sauce),
+    so a model that only answers "which grocery is this?" and emits that object's base rate scores a
+    pooled AUC of 0.72 while being unable to rank two grasps of the same object. That is exactly what
+    MSP was doing, and the pooled number reported it as a success.
+
+    The tell was Simpson's paradox: the pooled AUC (0.716) EXCEEDED both strata it was computed from
+    (0.691 box-shaped, 0.400 curved). Whenever the pooled figure beats every subgroup, the between-
+    group variation -- here, object identity -- is doing the work.
+
+    Conditioning on the scene holds the object AND its pose fixed, so only the grasp varies, and the
+    only way to score is to actually know which grasp is better. Chance is 0.500. An MLP given the
+    TRUE state x scores 0.685; no perception system can beat that ceiling.
+
+    Scenes are skipped when they have fewer than 3 executable grasps, or when every outcome agrees
+    (an AUC needs both a positive and a negative).
+    """
+    ex = executable.bool()
+    aucs = []
+    for i in range(score.shape[0]):
+        m = ex[i]
+        y = succ[i][m].detach().cpu().numpy()
+        if len(y) < 3 or y.min() == y.max():
+            continue
+        aucs.append(_auc(score[i][m].detach().cpu().numpy(), y))
+    return float(np.mean(aucs)) if aucs else float("nan")
+
+
+def _auc(s: np.ndarray, y: np.ndarray) -> float:
+    pos, neg = s[y == 1], s[y == 0]
+    gt = (pos[:, None] > neg[None, :]).mean()
+    eq = (pos[:, None] == neg[None, :]).mean()
+    return float(gt + 0.5 * eq)
 
 #: Sentinel used to remove non-executable actions from the argmax. A grasp the gripper cannot
 #: reach is not a candidate, and a deployed system knows its own kinematics, so it is entitled to
