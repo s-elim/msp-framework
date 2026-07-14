@@ -20,7 +20,14 @@ from torch import Tensor
 from msp.belief import Belief, DiagonalGaussianBelief
 from msp.types import OutcomeDistribution
 
-__all__ = ["Backbone", "MLPBackbone", "ResNetBackbone", "BeliefEncoder", "OutcomeHead"]
+__all__ = [
+    "AcquisitionNet",
+    "Backbone",
+    "BeliefEncoder",
+    "MLPBackbone",
+    "OutcomeHead",
+    "ResNetBackbone",
+]
 
 
 # ======================================================================================
@@ -109,6 +116,33 @@ class BeliefEncoder(nn.Module):
 
     Returning the abstraction rather than the tuple is what makes the frozen-variance bug
     unwritable downstream: the only way to reach the outcome head is `Belief.rsample`.
+
+    MULTI-VIEW, AND WHY THE ENCODER MUST DO THE FUSING ITSELF.
+
+    Formalization Eq 17 writes the fused observation as `o ∪ o_b`, and Algorithm 2 spells out what
+    that means: "execute b*; obtain fused/fresh observation o'; update belief:
+    (mu, logsig2) = Encoder_theta(o')". The ENCODER consumes the set of views. It is not a
+    post-hoc combination of separately-encoded beliefs.
+
+    That distinction is not pedantic, and getting it wrong produces a result that looks like
+    success. The obvious alternative -- encode each view independently and fuse the Gaussians as a
+    product (precision-weighted, the exact Bayesian rule for CONDITIONALLY INDEPENDENT
+    observations) -- assumes an independence that camera views of one object flatly do not have.
+    Measured on the real RGB-D corpus with that fusion:
+
+        * re-fusing the CURRENT view with itself produced the LARGEST information gain of all
+          eight candidates -- you "learn" the most by not moving, because the arithmetic simply
+          double-counts the same evidence;
+        * the OPPOSITE view, which sees the most genuinely new surface, scored the LOWEST.
+
+    An acquisition network trained on those targets learns to stay exactly where it is. The
+    reported 74% ambiguity reduction was precision arithmetic, not information.
+
+    A permutation-invariant set encoder has no such problem: duplicate views collapse under the
+    mean and contribute nothing, and correlations between neighbouring views are LEARNED from data
+    rather than assumed away. Train it with a random number of views per scene and it handles any
+    count at deployment, which is what Algorithm 2 needs -- views are acquired one at a time until
+    the ambiguity drops below tau_U, so the count is not known in advance.
     """
 
     def __init__(self, backbone: Backbone, latent_dim: int = 64, hidden: int = 256) -> None:
@@ -119,8 +153,24 @@ class BeliefEncoder(nn.Module):
             nn.Linear(backbone.output_dim, hidden), nn.GELU(), nn.Linear(hidden, 2 * latent_dim)
         )
 
+    def encode_views(self, obs: Tensor) -> Tensor:
+        """(B, V, C, H, W) -> (B, F). Permutation-invariant aggregation over the view axis."""
+        b, v = obs.shape[:2]
+        flat = obs.reshape(b * v, *obs.shape[2:])
+        feats = self.backbone(flat).reshape(b, v, -1)
+        return feats.mean(dim=1)
+
     def forward(self, obs: Tensor) -> Belief:
-        h = self.backbone(obs)
+        """`obs` may be a single view (B, C, H, W) or a SET of views (B, V, C, H, W).
+
+        For images, a set is 5-D and a single view is 4-D. For the vector observations used by the
+        synthetic world, a set is 3-D and a single vector is 2-D. Both are handled, because the
+        integration tests run the whole pipeline on the vector world in seconds.
+        """
+        is_image = obs.dim() >= 4
+        is_set = obs.dim() == 5 if is_image else obs.dim() == 3
+
+        h = self.encode_views(obs) if is_set else self.backbone(obs)
         mu, logvar = self.head(h).chunk(2, dim=-1)
         return DiagonalGaussianBelief(mu, logvar)  # clamps logvar internally
 
@@ -225,3 +275,55 @@ class OutcomeHead(nn.Module):
         """sigma_psi(z_k, a) for the full cross product. (B, K, Na). Feeds Eq 13/14."""
         dist = self.forward(z, actions, gripper=gripper)
         return dist.success_prob().squeeze(-1)
+
+
+# ======================================================================================
+# The amortized acquisition network (Eq 18)
+# ======================================================================================
+
+
+class AcquisitionNet(nn.Module):
+    """alpha_omega(o, b) ~= IG(b). Formalization Eq 18.
+
+    Trained by regression onto IG_true, which is obtained in simulation by RENDERING the
+    look-ahead observation o_b (Eq 17). At deployment nothing can be rendered -- the state is
+    unknown -- so this single forward pass replaces the entire look-ahead. That is what makes
+    Section 5 implementable without a generative observation model, i.e. without a world model.
+
+    THE `fitted` BUFFER IS NOT DECORATION. The audited repository shipped this network with no
+    loss, no target and no look-ahead, and then took an argmax over its randomly-initialized
+    output to steer a camera. `ActivePerception.select_view` refuses to run unless `fitted` is
+    True, and only the training loop sets it. A randomly-initialized acquisition net cannot be
+    used by accident.
+    """
+
+    def __init__(self, obs_feature_dim: int, n_views: int, hidden: int = 256) -> None:
+        super().__init__()
+        self.n_views = n_views
+        # The viewpoint is a discrete choice from a fixed ring, so it gets an embedding rather
+        # than a hand-rolled SE(3) featurization. If B ever becomes continuous, replace this
+        # embedding with the camera pose and nothing else changes.
+        self.view_embed = nn.Embedding(n_views, 32)
+        self.net = nn.Sequential(
+            nn.Linear(obs_feature_dim + 32, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
+        self.register_buffer("fitted", torch.tensor(False))
+
+    def forward(self, obs_features: Tensor, view_ids: Tensor) -> Tensor:
+        """obs_features: (B, F).  view_ids: (B, Nb) long.
+
+        Returns (B, Nb) -- NOT (B, Nb, 1). The trailing singleton is squeezed HERE, at the source,
+        because the audited selector called `argmax(dim=-1)` on a (B, Nb, 1) tensor, reduced over
+        the size-1 axis, and therefore always chose view 0. Returning the shape the caller actually
+        needs removes the opportunity to get it wrong.
+        """
+        if view_ids.dim() != 2:
+            raise ValueError(f"view_ids must be (B, Nb); got {tuple(view_ids.shape)}")
+        b, nb = view_ids.shape
+        e = self.view_embed(view_ids)  # (B, Nb, 32)
+        f = obs_features.unsqueeze(1).expand(b, nb, -1)  # (B, Nb, F)
+        return self.net(torch.cat([f, e], dim=-1)).squeeze(-1)  # (B, Nb)

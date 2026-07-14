@@ -113,6 +113,59 @@ class DiagonalGaussianBelief(Belief):
     def to(self, device: torch.device | str) -> DiagonalGaussianBelief:
         return DiagonalGaussianBelief(self.mu.to(device), self.logvar.to(device))
 
+    # -- multi-view fusion ---------------------------------------------------
+
+    @staticmethod
+    def fuse(beliefs: list[DiagonalGaussianBelief]) -> DiagonalGaussianBelief:
+        """Fuse per-view beliefs into a belief over the fused observation. Formalization Eq 17,
+        where `o ∪ o_b` denotes "the belief re-encoded from the fused observation".
+
+        THE MATHEMATICS, because the obvious alternatives are wrong.
+
+        Views are conditionally independent given the state (each camera has its own noise, and
+        Eq 1's graphical model makes O_i ⟂ O_j | X). So the posterior over z given several views
+        is the normalized product of the per-view posteriors, divided by the prior counted once
+        too often::
+
+            q(z | o_1..o_k)  ∝  prod_i q(z | o_i)  /  r(z)^(k-1)
+
+        For diagonal Gaussians with r = N(0, I), that is exact and closed-form in PRECISION space::
+
+            lambda_fused = sum_i lambda_i  -  (k-1) * 1        [prior precision is 1]
+            mu_fused     = ( sum_i lambda_i mu_i ) / lambda_fused
+
+        The two tempting shortcuts are both wrong and both hide it well:
+
+          * Averaging the means. This does not sharpen the belief at all -- two independent views
+            of the same object should make you MORE certain, and an average leaves the variance
+            where it was. Since epistemic variance is the entire signal that drives active
+            perception (Eq 16), a fusion that cannot reduce it makes looking again pointless, and
+            the information gain of every viewpoint would come out at zero.
+
+          * Concatenating the images and re-encoding. Defensible, but it forces a fixed number of
+            views into the architecture, and Algorithm 2 acquires views one at a time until the
+            ambiguity drops below tau_U. The number is not known in advance.
+
+        The prior subtraction is what makes this a fusion rather than a pile-up: without it, k
+        views of a completely uninformative scene would still collapse the belief to a point.
+        """
+        if not beliefs:
+            raise ValueError("cannot fuse an empty list of beliefs")
+        if len(beliefs) == 1:
+            return beliefs[0]
+
+        k = len(beliefs)
+        precisions = [torch.exp(-b.logvar) for b in beliefs]  # lambda_i
+        # Subtract the (k-1) copies of the unit prior precision, and floor so the fused belief can
+        # never be sharper than the information actually supports.
+        lam = torch.stack(precisions).sum(0) - float(k - 1)
+        lam = lam.clamp_min(1e-3)
+
+        weighted = torch.stack([p * b.mu for p, b in zip(precisions, beliefs, strict=True)]).sum(0)
+        mu = weighted / lam
+        logvar = -torch.log(lam)
+        return DiagonalGaussianBelief(mu, logvar)
+
     def __repr__(self) -> str:  # pragma: no cover - trivial
         b, d = self.mu.shape
         return f"DiagonalGaussianBelief(B={b}, d={d})"

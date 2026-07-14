@@ -1,16 +1,25 @@
-"""The two learned modules: A (BeliefEncoder) and B (OutcomeHead).
+"""The two learned modules (A: encoder, B: outcome head), plus the amortized acquisition net.
 
-Step 5 of the blueprint reduces MSP to exactly these two. Selection, abstention, active
-perception and adaptation are inference procedures over them, not further networks.
-
-An `AcquisitionNet` for Eq 18 lived here briefly and has been REMOVED. Eq 18 regresses onto
-IG_true, which requires a rendered look-ahead (Eq 17) that does not exist yet. A network with
-no trainable target is not a feature -- the audited repo shipped exactly that and then took an
-argmax over its random weights to steer a camera. It comes back when the renderer does.
+Step 5 of the blueprint reduces MSP to exactly two LEARNED MODULES: the encoder and the outcome
+head. `AcquisitionNet` is not a third one in the formal sense -- it estimates a functional of those
+two (Eq 17) rather than adding a new object to the theory -- but it does carry its own weights, so
+it lives here and is trained by its own loss (Eq 18).
 """
 
 from msp.models.nets import (
-    Backbone, BeliefEncoder, MLPBackbone, OutcomeHead, ResNetBackbone,
+    AcquisitionNet,
+    Backbone,
+    BeliefEncoder,
+    MLPBackbone,
+    OutcomeHead,
+    ResNetBackbone,
 )
 
-__all__ = ["Backbone", "BeliefEncoder", "MLPBackbone", "OutcomeHead", "ResNetBackbone"]
+__all__ = [
+    "AcquisitionNet",
+    "Backbone",
+    "BeliefEncoder",
+    "MLPBackbone",
+    "OutcomeHead",
+    "ResNetBackbone",
+]
