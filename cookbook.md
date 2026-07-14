@@ -230,25 +230,67 @@ theorem has content only for objects with a genuine outcome-invariance.
 
 ---
 
-## 9. Reproducing the paper
+## 9. Producing the paper: which script makes which figure and table
+
+**Everything the manuscript quotes is generated. Nothing is typed by hand.** `run_libero.py` writes
+JSON (and the raw scores); the figure and table scripts read *only* those files. So a figure can be
+restyled without retraining, and the paper cannot silently drift from the experiments.
+
+### The whole pipeline
 
 ```bash
-python scripts/paper/run_experiments.py --out results/   # E1-E5
-python scripts/paper/make_figures.py                     # -> paper/figures/*.pdf
-python scripts/paper/make_tables.py                      # -> paper/tables/*.tex
+# 0. GPU-1 is often busy. Check first, and pin to a free card.
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
+
+# 1. Run the experiments. Writes results/libero/*.json  (hours; trains one model per experiment)
+CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl python scripts/paper/run_libero.py --out results/libero
+
+# 2. LaTeX tables -> paper/tables/*.tex   (seconds, CPU, no GPU)
+python scripts/paper/make_tables.py  --results results/libero --out paper/tables
+
+# 3. PDF figures  -> paper/figures/*.pdf (seconds, CPU, no GPU)
+python scripts/paper/make_figures.py --results results/libero --out paper/figures
 ```
 
-`run_experiments.py` writes JSON; the figure and table scripts read *only* JSON. So a figure can be
-restyled without re-running a sweep, and no number in the manuscript is typed by hand.
+`MUJOCO_GL=egl` is **required** (headless box). Steps 2 and 3 need `pip install -e ".[plot]"`.
 
-The β sweep is a **one-dimensional** sweep over `train.beta_uniform`:
+Run a single experiment with `--only`, e.g. `--only l1 l6`. Smoke-test the whole thing in ~2 minutes
+with `--quick` (tiny corpus, 3 epochs — the numbers are meaningless, the plumbing is not).
 
-```bash
-python scripts/train.py --multirun +experiment=frontier   # 8 runs
-```
+### What each experiment produces
 
-Sweeping `beta.succ`, `beta.margin` and `beta.slip` as three separate keys makes Hydra's basic
-sweeper take their **cross product** — 8 values each is 512 jobs, not 8. That bug shipped once.
+| Experiment | Writes | Feeds |
+|---|---|---|
+| **L1** the decisive one | `l1_proxy_vs_msp.json`, `l1_scores.pt` | `tab_proxy_vs_msp`, `tab_geometry_split`, `tab_selective`, `fig_within_scene`, `fig_geometry_split`, `fig_risk_coverage`, `fig_per_object` |
+| **L2** coverage / abstention | `l2_coverage.json` | `fig_coverage` |
+| **L3** identifiability (Thm 4) | `l3_identifiability.json` | `tab_identifiability`, `fig_identifiability` |
+| **L4** active perception | `l4_active.json` | `tab_active` |
+| **L5** rate–distortion frontier | `l5_frontier.json` | `tab_frontier`, `fig_frontier` |
+| **L6** ablations | `l6_ablations.json` | `tab_libero_ablations`, `fig_ablations` |
+
+`l1_scores.pt` carries the raw per-grasp scores, so every L1 figure can be regenerated **without
+retraining**. If you restyle a plot, you do not re-run a sweep.
+
+### The four figures to actually put in the paper
+
+| Figure | What it shows | Why it is the one |
+|---|---|---|
+| `fig_risk_coverage` | act rate vs. fraction of executed grasps that lifted | **Lead with this.** MSP starts at 1.00 and declines; Ferrari-Canny starts *below* the random-grasp line and only crosses it near a 0.68 act rate. Its confidence is anti-correlated with success. |
+| `fig_within_scene` | within-scene AUC, with chance and the oracle ceiling drawn | The honest headline. Ranking grasps *of one object*, which object recognition cannot fake. |
+| `fig_geometry_split` | box-shaped vs curved objects | The falsifiable form of the claim, with a built-in control group. |
+| `fig_per_object` | per-object AUC over the base rates | Makes the pooled-AUC trap visible: base rates run 0.04 → 0.999. |
+
+### Tables
+
+`tab_proxy_vs_msp` (main), `tab_geometry_split` (control group), `tab_selective` (deployment),
+`tab_libero_ablations`. All use `booktabs`, so put `\usepackage{booktabs}` in the Overleaf preamble
+and `\input{tables/tab_proxy_vs_msp}`.
+
+### Ablations (L6)
+
+Every ablation is refereed by **within-scene AUC**, not pooled — see §11. They are: `full`,
+`uniform beta` (the headline: what happens with no sufficiency budget), `z ablated` (no perception at
+all — reviewer attack 21), `K=1 posterior sample`, and `latent dim 16 / 32`.
 
 ---
 
@@ -287,6 +329,45 @@ all *empty at import*, so config-driven instantiation raised `KeyError`.
 ---
 
 ## 11. Gotchas that will cost you a day
+
+**Never report a pooled AUC on its own — report the within-scene AUC.** The per-object base success
+rates on this corpus run from **0.043** (macaroni) to **0.999** (bbq_sauce), so a model that has
+learned nothing except *"which grocery is this?"* scores a pooled AUC of ~0.72 while being unable to
+rank two grasps of the same object. MSP did exactly that. The tell was **Simpson's paradox**: the
+pooled figure (0.716) *exceeded both strata it was computed from* (0.691 box, 0.400 curved). Whenever
+the pooled number beats every subgroup, the between-group variation is doing the work. Use
+`diagnostics.within_scene_auc`; the ceiling is **0.685** (an MLP handed the *true* state).
+
+**`BetaSchedule.uniform()` will quietly break the model.** `D_succ`, `D_margin` and `D_slip` are
+log-likelihoods on incommensurate scales (a BCE ≈ 0.6 nats; a zero-inflated log-normal ≈ 3.9; a
+Gaussian NLL). An equal β is *not* an equal budget — capacity goes to whichever likelihood is
+accidentally largest, and `succ`, the only outcome Eq 13 marginalises and Eq 24 certifies, is starved.
+The head then stops attending to the action entirely (prediction std across a scene's grasps: 0.002,
+against 0.415 in the truth). Worse, on LIBERO `margin` **is** the Ferrari-Canny ε on the bounding box
+— the proxy the paper discredits — so a uniform β spends the belief's capacity becoming sufficient
+for exactly the quantity we prove is uninformative. Use `BetaSchedule.sufficiency_for_success`.
+
+**An AUC needs a scene with both a success and a failure.** Three of the thirteen objects
+(bbq_sauce and the near-saturated bottles) succeed ~99% of the time, so almost no scene of theirs is
+*rankable*. An unguarded within-scene AUC over the two or three that remain is noise, and it plots as
+a near-zero point that reads as catastrophic failure. `fig_per_object` requires ≥15 rankable scenes
+and labels the rest "no rankable scenes", which is the honest thing to draw.
+
+**The action is a grasp point in the WORLD frame.** `sample_actions` returns `t_obj + lift`. The
+simulator must not add the object's position again. It did, once: the gripper was displaced by the
+object's entire world position, the nominal grasp succeeded 6% of the time instead of 99.6%, and the
+analytic tier — which plans correctly — was scoring one grasp while the simulator executed another.
+That is precisely how a grasp metric measures as "uninformative" when it is nothing of the kind.
+Cheapest detector: **success must RISE as the proposal tightens** (`spread` → 0). If it falls, the
+grasp is being aimed at the wrong place.
+
+**The corpus cache key hashes the physics source files.** Change `libero_sim.py`, `analytic.py` or
+`libero_assets.py` and every cached corpus is invalidated automatically. It used to key on the spec
+alone, which meant a physics fix would silently reload the corpus built under the *old* physics and
+reproduce the old numbers perfectly.
+
+**Report active perception as 17.5%, not 43%.** The naive max-over-viewpoints number is the winner's
+curse. See `diagnostics/active_eval.py`.
 
 **β multiplies distortion.** `L = Σ_j β_j·D_j + R`.
 

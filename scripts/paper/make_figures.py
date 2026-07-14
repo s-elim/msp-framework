@@ -206,6 +206,250 @@ def fig_latent_dim(results: Path, out: Path) -> None:
     log.info("wrote fig_latent_dim")
 
 
+
+# ======================================================================================
+# THE LIBERO FIGURES -- these are the ones the paper leads with.
+# ======================================================================================
+
+CHANCE = 0.5
+#: An MLP handed the TRUE state x -- pose, size, friction, mass, centre of mass, everything a camera
+#: cannot see -- and asked to rank a scene's candidate grasps. No perception system can beat it, so
+#: it is drawn on every within-scene axis. Without it a reader cannot tell 0.63 from "nearly solved".
+ORACLE_CEILING = 0.685
+
+
+def _scores(results: Path):
+    p = results / "l1_scores.pt"
+    if not p.exists():
+        log.warning("SKIP LIBERO figures (%s missing -- run run_libero.py --only l1)", p)
+        return None
+    import torch
+
+    return torch.load(p, map_location="cpu")
+
+
+def fig_within_scene(results: Path, out: Path) -> None:
+    """THE HEADLINE FIGURE. Can either predictor rank the candidate grasps of one settled pose?
+
+    Drawn on the WITHIN-SCENE axis, never the pooled one. Per-object base success rates on this
+    corpus run from 0.043 to 0.999, so a pooled AUC is won by answering "which grocery is this?" --
+    MSP once scored 0.716 pooled while being unable to rank two grasps of the same object.
+    """
+    r = _load(results, "l1_proxy_vs_msp.json")
+    if r is None:
+        return
+    an, msp = r["within_scene_auc_analytic"], r["within_scene_auc_msp"]
+
+    fig, ax = plt.subplots(figsize=(COL, 2.3))
+    bars = ax.bar(
+        ["Ferrari-Canny\n(reconstruction)", "MSP\n(outcomes)"], [an, msp],
+        color=[WARN, ACCENT], width=0.55, zorder=3,
+    )
+    for b, v in zip(bars, [an, msp]):
+        ax.text(b.get_x() + b.get_width() / 2, v + 0.006, f"{v:.3f}",
+                ha="center", va="bottom", fontsize=8, zorder=4)
+
+    ax.axhline(CHANCE, color=INK, ls=":", lw=1.0, zorder=2)
+    ax.text(1.46, CHANCE + 0.004, "chance", fontsize=6.5, color=INK, ha="right")
+    ax.axhline(ORACLE_CEILING, color=INK, ls="--", lw=1.0, zorder=2)
+    ax.text(1.46, ORACLE_CEILING + 0.004, "oracle (true state)", fontsize=6.5, color=INK, ha="right")
+
+    ax.set_ylim(0.45, 0.74)
+    ax.set_ylabel("within-scene AUC")
+    ax.set_title("Ranking the grasps of a single object")
+    fig.savefig(out / "fig_within_scene.pdf")
+    fig.savefig(out / "fig_within_scene.png")
+    plt.close(fig)
+    log.info("wrote fig_within_scene")
+
+
+def fig_geometry_split(results: Path, out: Path) -> None:
+    """THE FALSIFIABLE FORM OF THE CLAIM, and it is a natural control group.
+
+    Six of the thirteen groceries have a single-box collision hull -- butter, cookies, cream cheese
+    simply ARE boxes -- so the bounding-box "reconstruction" is EXACT for them and there is no
+    hallucinated surface. The rest are cans and bottles. The thesis predicts the analytic proxy works
+    where its geometry is right and fails where it is not. If it were equally bad on both, the
+    failure would not be reconstruction error and wrong-assumption #11 would not be what is going on.
+    """
+    r = _load(results, "l1_proxy_vs_msp.json")
+    if r is None or r.get("analytic_auc_boxlike") is None:
+        return
+    groups = ["box-shaped\n(reconstruction exact)", "curved\n(reconstruction wrong)"]
+    an = [r["analytic_auc_boxlike"], r["analytic_auc_complex"]]
+    ms = [r["msp_auc_boxlike"], r["msp_auc_complex"]]
+
+    x = np.arange(2)
+    w = 0.36
+    fig, ax = plt.subplots(figsize=(COL, 2.3))
+    ax.bar(x - w / 2, an, w, label="Ferrari-Canny", color=WARN, zorder=3)
+    ax.bar(x + w / 2, ms, w, label="MSP", color=ACCENT, zorder=3)
+    for xi, v in zip(x - w / 2, an):
+        ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5, zorder=4)
+    for xi, v in zip(x + w / 2, ms):
+        ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5, zorder=4)
+
+    ax.axhline(CHANCE, color=INK, ls=":", lw=1.0, zorder=2)
+    ax.text(1.5, CHANCE + 0.008, "chance", fontsize=6.5, ha="right", color=INK)
+    ax.set_xticks(x)
+    ax.set_xticklabels(groups)
+    ax.set_ylabel("AUC vs the real lift outcome")
+    ax.set_ylim(0.4, 1.0)
+    ax.legend(loc="upper left")
+    ax.set_title("The proxy fails exactly where its geometry is wrong")
+    fig.savefig(out / "fig_geometry_split.pdf")
+    fig.savefig(out / "fig_geometry_split.png")
+    plt.close(fig)
+    log.info("wrote fig_geometry_split")
+
+
+def fig_risk_coverage(results: Path, out: Path) -> None:
+    """THE DEPLOYMENT FIGURE, and the one a roboticist will read first.
+
+    The system ranks a scene's candidate grasps, executes its favourite, and acts only when
+    confident enough. Sweeping that confidence threshold sweeps the ACT RATE. The y-axis is the
+    fraction of executed grasps that actually lifted the object.
+
+    A useful scorer's curve RISES as it becomes more selective. The analytic proxy's does not: its
+    precision at its most confident 10% is BELOW its own always-act precision and below the random
+    control, i.e. the grasps it is surest about are the ones that fail.
+    """
+    import torch
+
+    d = _scores(results)
+    if d is None:
+        return
+    from msp.diagnostics.selective import compare_selective
+
+    cmp_ = compare_selective(
+        analytic_score=d["margin"], msp_score=d["s_msp"], succ=d["succ"],
+        executable=d["executable"], generator=torch.Generator().manual_seed(0),
+    )
+
+    fig, ax = plt.subplots(figsize=(COL, 2.4))
+    ax.plot(cmp_.msp.act_rate, cmp_.msp.precision, "-", color=ACCENT, label="MSP", zorder=3)
+    ax.plot(cmp_.analytic.act_rate, cmp_.analytic.precision, "-", color=WARN,
+            label="Ferrari-Canny", zorder=3)
+    ax.axhline(cmp_.random_pick, color=INK, ls=":", lw=1.0, zorder=2,
+               label=f"random grasp ({cmp_.random_pick:.2f})")
+    ax.set_xlabel("act rate  (fraction of scenes the system commits to)")
+    ax.set_ylabel("grasps that lifted the object")
+    ax.set_xlim(0.05, 1.0)
+    ax.set_ylim(0.35, 1.02)
+    ax.legend(loc="lower left")
+    ax.set_title("When it commits, does the object come up?")
+    fig.savefig(out / "fig_risk_coverage.pdf")
+    fig.savefig(out / "fig_risk_coverage.png")
+    plt.close(fig)
+    log.info("wrote fig_risk_coverage")
+
+
+def fig_per_object(results: Path, out: Path) -> None:
+    """Per-object within-scene AUC, ordered by base success rate.
+
+    This figure exists to make the pooled-AUC trap visible: the base rates (grey) span 0.04 to 0.999,
+    which is the entire reason a pooled AUC can be won without understanding grasping at all.
+
+    AN OBJECT IS ONLY PLOTTED IF ENOUGH OF ITS SCENES ARE ACTUALLY RANKABLE. A within-scene AUC needs
+    a scene containing BOTH a success and a failure; an object grasped successfully 99.9% of the time
+    (bbq_sauce) supplies almost none, and the AUC over the two or three that remain is noise, not a
+    measurement. Plotted unfiltered it renders as a near-zero point and reads as a catastrophic
+    failure of the model on that object, which is not what it is. Those objects get their base-rate
+    bar and no marker, which is the honest thing to draw: the question cannot be asked of them.
+    """
+    import torch
+
+    d = _scores(results)
+    if d is None:
+        return
+    from msp.diagnostics.selective import _auc
+
+    MIN_RANKABLE = 15
+
+    rows = []
+    for k, nm in enumerate(d["object_names"]):
+        sel = d["object_index"] == k
+        if int(sel.sum()) < 20:
+            continue
+        y, ex = d["succ"][sel], d["executable"][sel]
+        m = ex.bool()
+        base = float(y[m].mean())
+
+        # scenes where the ranking question is even well posed
+        aa, mm = [], []
+        for i in range(y.shape[0]):
+            yi = y[i][ex[i].bool()].numpy()
+            if len(yi) < 3 or yi.min() == yi.max():
+                continue
+            aa.append(_auc(d["margin"][sel][i][ex[i].bool()].numpy(), yi))
+            mm.append(_auc(d["s_msp"][sel][i][ex[i].bool()].numpy(), yi))
+        rows.append({
+            "name": nm.replace("_", " "), "base": base, "box": bool(d["boxlike"][k]),
+            "n": len(mm),
+            "wa": float(np.mean(aa)) if len(mm) >= MIN_RANKABLE else np.nan,
+            "wm": float(np.mean(mm)) if len(mm) >= MIN_RANKABLE else np.nan,
+        })
+
+    rows.sort(key=lambda r: r["base"])
+    x = np.arange(len(rows))
+    base = np.array([r["base"] for r in rows])
+    wa = np.array([r["wa"] for r in rows])
+    wm = np.array([r["wm"] for r in rows])
+
+    fig, ax = plt.subplots(figsize=(DCOL, 2.8))
+    ax.bar(x, base, 0.7, color="#C9CFD6", zorder=2, label="base success rate")
+    ax.plot(x, wa, "o", color=WARN, zorder=4, label="Ferrari-Canny (within-scene AUC)")
+    ax.plot(x, wm, "s", color=ACCENT, zorder=4, label="MSP (within-scene AUC)")
+    ax.axhline(CHANCE, color=INK, ls=":", lw=1.0, zorder=3)
+
+    # Say out loud which objects cannot be scored, rather than drawing a noisy point for them.
+    for xi, r in zip(x, rows):
+        if np.isnan(r["wm"]):
+            ax.text(xi, 0.52, "no rankable\nscenes", fontsize=5.5, ha="center", va="bottom",
+                    color=INK, rotation=90, alpha=0.75, zorder=4)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [f"{r['name']}\n({'box' if r['box'] else 'curved'})" for r in rows],
+        rotation=45, ha="right", fontsize=6,
+    )
+    ax.set_ylabel("rate  /  AUC")
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc="upper left", ncol=3, fontsize=6)
+    ax.set_title("Base rates span 0.04 to 0.999 -- which is why a pooled AUC cannot be trusted")
+    fig.savefig(out / "fig_per_object.pdf")
+    fig.savefig(out / "fig_per_object.png")
+    plt.close(fig)
+    log.info("wrote fig_per_object (%d/%d objects rankable)",
+             int((~np.isnan(wm)).sum()), len(rows))
+
+
+def fig_ablations(results: Path, out: Path) -> None:
+    """Ablations on the within-scene axis. The bar to look at is `uniform beta`."""
+    rows = _load(results, "l6_ablations.json")
+    if rows is None:
+        return
+    rows = sorted(rows, key=lambda r: r.get("within_scene_auc", 0.0))
+    names = [r["ablation"] for r in rows]
+    vals = [r.get("within_scene_auc", float("nan")) for r in rows]
+
+    fig, ax = plt.subplots(figsize=(COL, 0.36 * len(rows) + 1.0))
+    colors = [ACCENT if n == "full" else WARN for n in names]
+    ax.barh(names, vals, color=colors, height=0.6, zorder=3)
+    for i, v in enumerate(vals):
+        ax.text(v + 0.004, i, f"{v:.3f}", va="center", fontsize=6.5, zorder=4)
+    ax.axvline(CHANCE, color=INK, ls=":", lw=1.0, zorder=2)
+    ax.text(CHANCE, len(rows) - 0.4, " chance", fontsize=6.5, color=INK)
+    ax.axvline(ORACLE_CEILING, color=INK, ls="--", lw=1.0, zorder=2)
+    ax.set_xlim(0.45, 0.74)
+    ax.set_xlabel("within-scene AUC")
+    ax.set_title("Ablations")
+    fig.savefig(out / "fig_ablations.pdf")
+    fig.savefig(out / "fig_ablations.png")
+    plt.close(fig)
+    log.info("wrote fig_ablations")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", type=Path, default=Path("results"))
@@ -213,6 +457,14 @@ def main() -> None:
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
+    # The LIBERO figures the paper leads with.
+    fig_within_scene(args.results, args.out)
+    fig_geometry_split(args.results, args.out)
+    fig_risk_coverage(args.results, args.out)
+    fig_per_object(args.results, args.out)
+    fig_ablations(args.results, args.out)
+
+    # The theory figures.
     fig_identifiability(args.results, args.out)
     fig_frontier(args.results, args.out)
     fig_coverage(args.results, args.out)

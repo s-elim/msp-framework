@@ -45,7 +45,10 @@ from msp.data import LiberoCorpusSpec, LiberoGraspDataset, collate, generate_lib
 from msp.diagnostics import (  # noqa: E402
     analyze,
     compare_predictors,
+    compare_selective,
     evaluate_active_perception,
+    risk_coverage,
+    roc_auc,
     within_scene_auc,
 )
 from msp.engine import Evaluator, TrainConfig, Trainer  # noqa: E402
@@ -150,8 +153,30 @@ def l1_proxy_vs_msp(ds, dls, device, out: Path, epochs: int) -> dict:
     # 0.524, i.e. it could not rank two grasps of the same object. Conditioning on the scene holds
     # the object and its pose fixed, so only the grasp varies. Ceiling: an MLP given the TRUE state
     # scores 0.685.
-    ws_msp = within_scene_auc(s_msp, test.succ.squeeze(-1), test.executable)
-    ws_an = within_scene_auc(test.margin.squeeze(-1), test.succ.squeeze(-1), test.executable)
+    succ = test.succ.squeeze(-1)
+    eps = test.margin.squeeze(-1)
+    ws_msp = within_scene_auc(s_msp, succ, test.executable)
+    ws_an = within_scene_auc(eps, succ, test.executable)
+
+    # The DEPLOYMENT question, and the number to lead with: given a scene, the system ranks the
+    # candidate grasps, executes its favourite, and we ask whether the object comes off the table.
+    sel = compare_selective(
+        analytic_score=eps, msp_score=s_msp, succ=succ, executable=test.executable,
+        generator=torch.Generator().manual_seed(0),
+    )
+    log.info("\n%s", sel.summary())
+
+    # Raw scores, so every figure and table can be regenerated WITHOUT retraining. The alternative
+    # is a plot whose numbers cannot be traced to the run that produced them.
+    torch.save(
+        {
+            "s_msp": s_msp, "margin": eps, "succ": succ,
+            "executable": test.executable, "object_index": test.object_index,
+            "boxlike": boxlike_obj, "object_names": [o.name for o in sim.objects],
+        },
+        out / "l1_scores.pt",
+    )
+
     log.info(
         "\n  WITHIN-SCENE AUC (rank the candidate grasps of ONE settled pose):\n"
         "      Ferrari-Canny on the OBB   %.3f\n"
@@ -159,7 +184,11 @@ def l1_proxy_vs_msp(ds, dls, device, out: Path, epochs: int) -> dict:
         "      chance 0.500  |  oracle ceiling (MLP on the TRUE state) 0.685",
         ws_an, ws_msp,
     )
-    return asdict(rep) | {"within_scene_auc_msp": ws_msp, "within_scene_auc_analytic": ws_an}
+    return (
+        asdict(rep)
+        | {"within_scene_auc_msp": ws_msp, "within_scene_auc_analytic": ws_an}
+        | sel.to_metrics()
+    )
 
 
 # ======================================================================================
@@ -266,45 +295,118 @@ def l5_frontier(ds, dls, device, out: Path, epochs: int) -> list[dict]:
     return rows
 
 
-def l6_ablations(ds, dls, device, out: Path, epochs: int) -> list[dict]:
-    """z-ablation (reviewer attack 21): if the head ignores z and memorizes an action prior, the
-    framework is vacuous."""
-    log.info("=== L6: ablations ===")
-    from msp.belief import DiagonalGaussianBelief
+def _score(enc, head, test, device, k: int = 32):
+    """s(o, a) = E_z[p(succ | z, a)], Eq 13."""
+    out = []
+    with torch.no_grad():
+        for i in range(0, len(test), 128):
+            b = enc(test.obs[i : i + 128].to(device))
+            p = head.success_probs(b.rsample(k), test.actions[i : i + 128].to(device))
+            out.append(p.mean(dim=1).cpu())
+    return torch.cat(out)
 
-    rows = []
-    enc, head = train_model(ds, dls, device, epochs, 30.0, 64, out / "l6_full")
+
+def _ablation_row(name: str, enc, head, ds, dls, device) -> dict:
+    """Every ablation is scored on WITHIN-SCENE AUC, plus the calibrated numbers.
+
+    A pooled AUC cannot referee an ablation on this corpus: the per-object base success rates run
+    from 0.043 to 0.999, so a model that has learned nothing but object identity still posts ~0.72
+    and every ablation looks harmless. Within-scene AUC conditions on the scene, so only the grasp
+    varies and the ablation has nowhere to hide.
+    """
+    test = ds["test"]
+    s = _score(enc, head, test, device)
     cal = ConformalCalibrator(alpha=0.1, gamma=0.0)
     eng = InferenceEngine(enc, head, cal, InferenceConfig(num_samples=32))
     ev = Evaluator(eng, device)
     ev.calibrate(dls["calib"], cal)
-    full = asdict(ev.evaluate(dls["test"]))
-    rows.append(full | {"ablation": "full"})
-    log.info("  full       D=%.4f  coverage=%.3f", full["distortion"], full["coverage"])
+    r = ev.evaluate(dls["test"])
+    succ = test.succ.squeeze(-1)
+    ws = within_scene_auc(s, succ, test.executable)
+    m = test.executable.bool()
+    pooled = roc_auc(s[m].numpy(), succ[m].numpy())
+    sel = risk_coverage(s, succ, test.executable)
+    log.info(
+        "  %-22s  within-scene %.3f | pooled %.3f | top1 %.3f | action-std %.4f | cov %.3f",
+        name, ws, pooled, sel.top1_success, float(s.std(dim=1).mean()), r.coverage,
+    )
+    return asdict(r) | {
+        "ablation": name,
+        "within_scene_auc": ws,
+        "pooled_auc": pooled,
+        "top1_success": sel.top1_success,
+        "action_response_std": float(s.std(dim=1).mean()),
+    }
 
+
+def l6_ablations(ds, dls, device, out: Path, epochs: int) -> list[dict]:
+    """What each component is actually worth, refereed by WITHIN-SCENE AUC.
+
+    The first ablation is the important one, and it is the bug this repository shipped with.
+    `BetaSchedule.uniform` puts an equal beta on succ, margin and slip -- negative log-likelihoods on
+    incommensurate scales -- so capacity goes to whichever is accidentally largest, and `succ`, the
+    only outcome Eq 13 marginalizes and Eq 24 certifies, is starved. The head then stops attending to
+    the action entirely. On LIBERO it is worse than starvation: `margin` IS the Ferrari-Canny epsilon
+    on the bounding box, so a uniform beta spends the belief's capacity becoming sufficient for
+    exactly the quantity this paper proves is uninformative.
+    """
+    log.info("=== L6: ablations (refereed by WITHIN-SCENE AUC, not pooled) ===")
+    from msp.belief import DiagonalGaussianBelief
+
+    rows = []
+
+    # (1) FULL
+    enc, head = train_model(ds, dls, device, epochs, beta=300.0, latent=64, out=out / "l6_full")
+    rows.append(_ablation_row("full", enc, head, ds, dls, device))
+
+    # (2) THE BETA SCHEDULE -- the headline ablation.
+    seed_everything(0)
+    e2 = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=64)
+    h2 = OutcomeHead(latent_dim=64, action_dim=ACTION_DIM)
+    Trainer(e2, h2, dls["train"], dls["val"], TrainConfig(
+        epochs=epochs, lr=5e-4, warmup_epochs=3,
+        amp_dtype="bf16" if device.type == "cuda" else "off",
+        beta=BetaSchedule.uniform(300.0), out_dir=str(out / "l6_uniform_beta"),
+    ), device).fit()
+    e2.eval(); h2.eval()
+    rows.append(_ablation_row("uniform beta (no budget)", e2, h2, ds, dls, device))
+
+    # (3) Z-ABLATION (reviewer attack 21). If the head ignores z and memorizes an action prior, the
+    # framework is vacuous: perception would be contributing nothing at all.
     class _ZAblated(BeliefEncoder):
-        """Emits a belief independent of the observation: z carries zero information."""
-
         def forward(self, obs):  # type: ignore[override]
             b = super().forward(obs)
             return DiagonalGaussianBelief(torch.zeros_like(b.mu), torch.zeros_like(b.logvar))
 
     seed_everything(0)
-    enc_z = _ZAblated(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=64)
-    head_z = OutcomeHead(latent_dim=64, action_dim=ACTION_DIM)
-    cfg = TrainConfig(epochs=epochs, lr=5e-4, warmup_epochs=3,
-                      amp_dtype="bf16" if device.type == "cuda" else "off",
-                      beta=BetaSchedule.sufficiency_for_success(300.0), out_dir=str(out / "l6_z"))
-    Trainer(enc_z, head_z, dls["train"], dls["val"], cfg, device).fit()
-    enc_z.eval(); head_z.eval()
-    cal_z = ConformalCalibrator(alpha=0.1, gamma=0.0)
-    eng_z = InferenceEngine(enc_z, head_z, cal_z, InferenceConfig(num_samples=32))
-    ev_z = Evaluator(eng_z, device)
-    ev_z.calibrate(dls["calib"], cal_z)
-    zab = asdict(ev_z.evaluate(dls["test"]))
-    rows.append(zab | {"ablation": "z_ablated"})
-    log.info("  z-ablated  D=%.4f  coverage=%.3f   (MUST be worse than full)",
-             zab["distortion"], zab["coverage"])
+    e3 = _ZAblated(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=64)
+    h3 = OutcomeHead(latent_dim=64, action_dim=ACTION_DIM)
+    Trainer(e3, h3, dls["train"], dls["val"], TrainConfig(
+        epochs=epochs, lr=5e-4, warmup_epochs=3,
+        amp_dtype="bf16" if device.type == "cuda" else "off",
+        beta=BetaSchedule.sufficiency_for_success(300.0), out_dir=str(out / "l6_z"),
+    ), device).fit()
+    e3.eval(); h3.eval()
+    rows.append(_ablation_row("z ablated (no perception)", e3, h3, ds, dls, device))
+
+    # (4) SINGLE POSTERIOR SAMPLE. The distortion is an expectation over z; K=1 is unbiased but its
+    # variance is ruinous when the posterior is noise-dominated.
+    seed_everything(0)
+    e4 = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=64)
+    h4 = OutcomeHead(latent_dim=64, action_dim=ACTION_DIM)
+    Trainer(e4, h4, dls["train"], dls["val"], TrainConfig(
+        epochs=epochs, lr=5e-4, warmup_epochs=3, train_samples=1,
+        amp_dtype="bf16" if device.type == "cuda" else "off",
+        beta=BetaSchedule.sufficiency_for_success(300.0), out_dir=str(out / "l6_k1"),
+    ), device).fit()
+    e4.eval(); h4.eval()
+    rows.append(_ablation_row("K=1 posterior sample", e4, h4, ds, dls, device))
+
+    # (5) LATENT WIDTH. The minimality claim: a sufficient statistic should not need to be wide.
+    for d in (16, 32):
+        enc_d, head_d = train_model(ds, dls, device, epochs, 300.0, d, out / f"l6_d{d}")
+        rows.append(_ablation_row(f"latent dim {d}", enc_d, head_d, ds, dls, device))
+
     return rows
 
 
