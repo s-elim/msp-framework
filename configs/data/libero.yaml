@@ -1,0 +1,23 @@
+# THE PAPER'S DATASET: real LIBERO grocery objects, RGB-D, MuJoCo grasp outcomes.
+#
+# Assets are VENDORED under assets/libero/ (13 HOPE groceries, 30 MB). The repository is
+# self-contained: no LIBERO checkout is needed to reproduce a number, and the upstream LIBERO
+# install is never written to.
+kind: libero
+
+n_train: 8000
+n_val: 1000
+n_calib: 2000     # MUST be disjoint from train (Assumption A5); the calibrator enforces it
+n_test: 2000
+n_actions: 8
+
+image_size: 96
+n_views: 8          # |B| -- the sensing action space for active perception. 1 = passive.
+max_train_views: 3  # the encoder sees 1..3 views per scene, so it can USE a second one
+
+objects: []         # empty = all 13 HOPE groceries
+asset_root: null    # null = the vendored copy
+cache_dir: data/corpus
+
+batch_size: 128
+num_workers: 0      # the corpus is cached in RAM; workers only add fork cost

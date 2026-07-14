@@ -1,6 +1,7 @@
 """The paper's evidence: identifiability (C2), active perception (C3), and the frontier."""
 
 from msp.diagnostics.active_eval import ActiveReport, evaluate_active_perception
+from msp.diagnostics.proxy_eval import ProxyComparison, compare_predictors, roc_auc
 from msp.diagnostics.identifiability import (
     IdentifiabilityReport,
     analyze,
@@ -14,6 +15,9 @@ from msp.diagnostics.identifiability import (
 
 __all__ = [
     "ActiveReport",
+    "ProxyComparison",
+    "compare_predictors",
+    "roc_auc",
     "IdentifiabilityReport",
     "analyze",
     "evaluate_active_perception",

@@ -24,6 +24,8 @@ Two oracles ship today, and they are for different jobs.
 """
 
 from msp.oracle.analytic import STATE_DIM, STATE_SLICES, AnalyticGraspOracle
+from msp.oracle.libero_assets import LiberoObject, LiberoObjectLibrary
+from msp.oracle.libero_sim import LiberoGraspOracle
 from msp.oracle.base import PhysicsOracle
 from msp.oracle.synthetic import SyntheticOracle
 
@@ -31,6 +33,9 @@ __all__ = [
     "STATE_DIM",
     "STATE_SLICES",
     "AnalyticGraspOracle",
+    "LiberoGraspOracle",
+    "LiberoObject",
+    "LiberoObjectLibrary",
     "PhysicsOracle",
     "SyntheticOracle",
 ]

@@ -213,6 +213,79 @@ Random second view          & {r['reduction_random'] * 100:.1f}\% \\
     log.info("wrote tab_active.tex")
 
 
+def table_proxy(results: Path, out: Path) -> None:
+    """THE PAPER'S HEADLINE TABLE. Does an analytic grasp metric computed on a RECONSTRUCTION
+    predict what actually happens -- and does MSP, trained on outcomes, do better?"""
+    r = _load(results, "l1_proxy_vs_msp.json")
+    if not r:
+        return
+    msp = ""
+    if r.get("msp_auc") is not None:
+        msp = (rf"MSP (belief trained on outcomes) & \textbf{{{r['msp_auc']:.3f}}} & "
+               rf"{r['msp_best_accuracy']:.3f} \\" + "\n")
+    tex = HEADER.format(src="l1_proxy_vs_msp.json") + rf"""
+\begin{{table}}[t]
+\centering
+\caption{{\textbf{{Analytic grasp quality does not predict what happens.}} Ferrari--Canny
+$\epsilon$ is computed on an oriented bounding box -- roughly the geometry a pose-and-shape
+pipeline recovers -- while the outcome is a rigid-body lift against the object's true mesh.
+AUC$=0.5$ means the score carries no information about the outcome. Success is rare
+({r['success_rate']*100:.1f}\%), so accuracy is not informative on its own: \emph{{no threshold on
+$\epsilon$ beats simply predicting that every grasp fails}} ({r['majority_accuracy']:.3f}). The
+proxy is not mis-calibrated; it is uninformative. Non-executable grasp poses are excluded, since
+both predictors trivially agree on those. $n={r['n_grasps']:,}$ grasps, 13 LIBERO objects.}}
+\label{{tab:proxy}}
+\begin{{tabular}}{{lrr}}
+\toprule
+Predictor & AUC & Best accuracy \\
+\midrule
+Ferrari--Canny $\epsilon$ (reconstructed geometry) & {r['analytic_auc']:.3f} & {r['analytic_best_accuracy']:.3f} \\
+{msp}\midrule
+Always predict ``fail'' & --- & {r['majority_accuracy']:.3f} \\
+\bottomrule
+\end{{tabular}}
+\end{{table}}
+"""
+    (out / "tab_proxy.tex").write_text(tex)
+    log.info("wrote tab_proxy.tex")
+
+
+def table_identifiability_per_object(results: Path, out: Path) -> None:
+    """Theorem 4 has content for SOME objects and not others. Report that."""
+    r = _load(results, "l3_identifiability.json")
+    if not r:
+        return
+    rows = r["per_object"]
+    body = "\n".join(
+        rf"\texttt{{{x['object'].replace('_', chr(92)+'_')}}} & {x['rank']} & {x['null_dim']} & "
+        + (rf"{x['max_angle_deg']:.2f} \\" if x["max_angle_deg"] is not None else r"--- \\")
+        for x in rows
+    )
+    vac = sum(1 for x in rows if x["null_dim"] == 0)
+    tex = HEADER.format(src="l3_identifiability.json") + rf"""
+\begin{{table}}[t]
+\centering
+\caption{{Identifiability per object (Theorem~\ref{{thm:identifiability}}). $\dim\ker J(x)$ is the
+dimension of the manipulation-indistinguishable subspace, and the principal angle compares the
+\emph{{predicted}} $\ker J(x)$ against a subspace measured independently by perturbing the state
+and recording which directions leave real outcomes unchanged. Where the theorem has content the
+prediction is essentially exact ($<1^\circ$). For {vac} of {len(rows)} objects $J(x)$ has full rank
+and $\ker J(x)=\{{0\}}$: \emph{{nothing is continuously unidentifiable, and the theorem says
+nothing at all}}. That is a real limit on its reach and we state it.}}
+\label{{tab:ident}}
+\begin{{tabular}}{{lrrr}}
+\toprule
+Object & $\mathrm{{rank}}\,J$ & $\dim\ker J$ & Max angle [$^\circ$] \\
+\midrule
+{body}
+\bottomrule
+\end{{tabular}}
+\end{{table}}
+"""
+    (out / "tab_identifiability_per_object.tex").write_text(tex)
+    log.info("wrote tab_identifiability_per_object.tex")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", type=Path, default=Path("results"))
@@ -225,6 +298,8 @@ def main() -> None:
     table_ablations(args.results, args.out)
     table_frontier(args.results, args.out)
     table_active(args.results, args.out)
+    table_proxy(args.results, args.out)
+    table_identifiability_per_object(args.results, args.out)
     log.info("tables -> %s", args.out)
 
 

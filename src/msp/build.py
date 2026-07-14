@@ -49,9 +49,10 @@ def build_oracle(cfg: Any) -> SyntheticOracle:
 
 
 def build_models(cfg: Any, obs_dim: int) -> tuple[BeliefEncoder, OutcomeHead]:
-    if cfg.data.get("kind", "synthetic") == "rgbd" and cfg.model.backbone == "mlp":
+    if cfg.data.get("kind", "synthetic") in ("rgbd", "libero") and cfg.model.backbone == "mlp":
         raise ValueError(
-            "data=rgbd yields (4, H, W) images, but model=mlp expects a vector. Use model=resnet. "
+            f"data={cfg.data.kind} yields (4, H, W) images, but model=mlp expects a vector. Use "
+            "model=resnet. "
             "(The audited README advertised the RGB-D backbone while the dataset produced 32-dim "
             "vectors; `model=resnet` crashed inside conv2d. Fail loudly here instead.)"
         )
@@ -77,7 +78,10 @@ def build_loaders(cfg: Any, oracle: Any) -> dict[str, DataLoader[Any]]:
     """Four DISJOINT folds. The seeds differ, which is what makes the calibration fold
     genuinely held out (Assumption A5) -- the calibrator will refuse a fold that collides
     with training."""
-    if cfg.data.get("kind", "synthetic") == "rgbd":
+    kind = cfg.data.get("kind", "synthetic")
+    if kind == "libero":
+        return _build_libero_loaders(cfg)
+    if kind == "rgbd":
         return _build_rgbd_loaders(cfg)
     d = cfg.data
     specs = {
@@ -155,6 +159,54 @@ def _build_rgbd_loaders(cfg: Any) -> dict[str, DataLoader[Any]]:
         ds = RGBDGraspDataset(
             path,
             max_train_views=d.get("max_train_views", 1) if name == "train" else 1,
+        )
+        sampler = None
+        if is_distributed() and name == "train":
+            sampler = DistributedSampler(ds, shuffle=True, drop_last=True)
+        out[name] = DataLoader(
+            ds,
+            batch_size=d.batch_size,
+            shuffle=(name == "train" and sampler is None),
+            sampler=sampler,
+            num_workers=d.num_workers,
+            collate_fn=collate,
+            pin_memory=True,
+            drop_last=(name == "train"),
+            persistent_workers=d.num_workers > 0,
+            worker_init_fn=_seed_worker,
+            generator=torch.Generator().manual_seed(cfg.seed),
+        )
+    return out
+
+
+def _build_libero_loaders(cfg: Any) -> dict[str, DataLoader[Any]]:
+    """The paper's dataset: real LIBERO groceries, RGB-D, MuJoCo grasp outcomes."""
+    from pathlib import Path
+
+    from msp.data import LiberoCorpusSpec, LiberoGraspDataset, generate_libero_corpus
+
+    d = cfg.data
+    cache = Path(d.cache_dir)
+    specs = {"train": (d.n_train, 1), "val": (d.n_val, 2), "calib": (d.n_calib, 3),
+             "test": (d.n_test, 4)}
+    out = {}
+    for name, (n, seed) in specs.items():
+        path = generate_libero_corpus(
+            LiberoCorpusSpec(
+                n_scenes=n,
+                n_actions=d.n_actions,
+                image_size=d.image_size,
+                n_views=d.get("n_views", 1),
+                seed=seed,
+                objects=tuple(d.get("objects", []) or ()),
+            ),
+            cache,
+            asset_root=d.get("asset_root", None),
+        )
+        # Only the TRAINING fold gets a random view count. Evaluation must be a fixed,
+        # reproducible protocol.
+        ds = LiberoGraspDataset(
+            path, max_train_views=d.get("max_train_views", 1) if name == "train" else 1
         )
         sampler = None
         if is_distributed() and name == "train":

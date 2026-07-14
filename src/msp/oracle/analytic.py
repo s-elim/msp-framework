@@ -164,6 +164,8 @@ class AnalyticGraspOracle(PhysicsOracle):
         self.noise = noise
         self.device = torch.device(device)
         self.directions = _wrench_directions(n_directions, self.device)
+        #: (B, 3) per-scene base half-extents, or None for the parametric box/cylinder world.
+        self.base_half: Tensor | None = None
 
     @property
     def state_dim(self) -> int:
@@ -175,6 +177,43 @@ class AnalyticGraspOracle(PhysicsOracle):
         return self
 
     # -- geometry ------------------------------------------------------------
+
+    def _half(self, state: Tensor) -> Tensor:
+        """The half-extents the ANALYTIC tier plans on. (B, 3).
+
+        With `base_half` set, this is a per-scene ORIENTED BOUNDING BOX -- a deliberately crude
+        stand-in for the object's true shape, of about the fidelity a pose-and-shape pipeline
+        produces. The simulator meanwhile collides the object's true convex decomposition. The
+        disagreement between the two is not a nuisance to be minimized; it is the measurement the
+        paper is about (blueprint wrong-assumption #11: force closure evaluated on a hallucinated
+        surface passes the check and fails the lift). On a box that gap is identically zero, which
+        is precisely why boxes cannot test the claim.
+
+        Without `base_half` (the synthetic box/cylinder world), the state's log_size IS the size.
+        """
+        if self.base_half is None:
+            return torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038)
+
+        b = state.shape[0]
+        base = self.base_half.to(state.device)
+        if base.shape[0] == 1:
+            base = base.expand(b, 3)
+        elif base.shape[0] != b:
+            # `outcome_jacobian` evaluates Phi at a SINGLE state, so a base_half installed for a
+            # whole batch will not match. Say so, rather than letting a reshape fail three frames
+            # deep inside the wrench metric.
+            raise ValueError(
+                f"base_half has {base.shape[0]} scenes but {b} states were passed. Install the "
+                "bounding box for exactly the scenes you are about to evaluate: "
+                "oracle.set_base_half(sim.base_half(object_index[i:i+1])) for a single state."
+            )
+        scale = torch.exp(state[:, STATE_SLICES["log_size"]])  # (B, 3), nominal 1.0
+        return (base * scale).clamp(0.008, 0.060)
+
+    def set_base_half(self, base_half: Tensor | None) -> AnalyticGraspOracle:
+        """Install the per-scene bounding boxes for the current batch. Returns self."""
+        self.base_half = base_half
+        return self
 
     def _contacts(
         self, state: Tensor, actions: Tensor
@@ -189,10 +228,7 @@ class AnalyticGraspOracle(PhysicsOracle):
 
         t_obj = state[:, STATE_SLICES["pose_t"]]  # (B, 3)
         R_obj = _axis_angle_to_matrix(state[:, STATE_SLICES["pose_r"]])  # (B, 3, 3)
-        # Half-extents are clamped to what the gripper can physically straddle. The jaws open to
-        # +-0.044 about the closing axis, so anything above that is not a hard grasp, it is an
-        # impossible one, and it teaches the model nothing except that big things fail.
-        half = torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038)  # (B, 3)
+        half = self._half(state)
 
         g_t = actions[..., 0:3]  # (B, Na, 3)
         R_g = _quat_to_matrix(actions[..., 3:7])  # (B, Na, 3, 3)
@@ -370,7 +406,7 @@ class AnalyticGraspOracle(PhysicsOracle):
         """
         b, na, _ = actions.shape
         R_obj = _axis_angle_to_matrix(state[:, STATE_SLICES["pose_r"]])  # (B,3,3)
-        half = torch.exp(state[:, STATE_SLICES["log_size"]]).clamp(0.018, 0.038)  # (B,3)
+        half = self._half(state)  # (B, 3)
 
         R_g = _quat_to_matrix(actions[..., 3:7])  # (B,Na,3,3)
         close_axis = R_g[..., :, 0]  # local +x, world frame
@@ -396,11 +432,15 @@ class AnalyticGraspOracle(PhysicsOracle):
 
         jaw = self.JAW_INNER_HALF_WIDTH - extent
 
-        # Floor and palm clearance, in world z. The object rests on the table, so its centre sits
-        # at half_z above the floor and the floor is at -half_z relative to that centre.
-        half_z = half[:, 2].unsqueeze(1)  # (B,1)
-        floor = (tcp[..., 2] - self.FINGER_BELOW_TCP) - (-half_z)
-        palm = (tcp[..., 2] + self.PALM_ABOVE_TCP) - half_z
+        # Floor and palm clearance, in WORLD z.
+        #
+        # The relevant height is the object's extent along world +z, which for a rotated object is
+        # the support function sum_i |R[2,i]| * half_i -- NOT its object-frame z half-extent. A
+        # bottle lying on its side is short in the world and tall in its own frame, and using the
+        # wrong one puts the palm clearance test on the wrong object entirely.
+        world_half_z = (R_obj[:, 2, :].abs() * half).sum(dim=-1, keepdim=True)  # (B, 1)
+        floor = (tcp[..., 2] - self.FINGER_BELOW_TCP) - (-world_half_z)
+        palm = (tcp[..., 2] + self.PALM_ABOVE_TCP) - world_half_z
 
         return torch.minimum(torch.minimum(jaw, floor), palm)
 
@@ -481,14 +521,47 @@ class AnalyticGraspOracle(PhysicsOracle):
         t_obj = state[:, STATE_SLICES["pose_t"]]
         R_obj = _axis_angle_to_matrix(state[:, STATE_SLICES["pose_r"]])
 
-        # Aim the closing axis (local +x) at one of the object's principal axes, jittered.
-        # A uniform prior over SE(3) would put essentially all of its mass on grasps that miss
-        # the object entirely, which carry no information about x -- the labels would be a
-        # constant 0 and Assumption A8 (informative outcomes) would fail.
-        axis_id = torch.randint(0, 2, (b, n_actions), generator=generator, device=dev)
+        # CHOOSE THE CLOSING AXIS IN THE WORLD FRAME, NOT THE OBJECT'S.
+        #
+        # A uniform prior over SE(3) would put essentially all of its mass on grasps that miss the
+        # object entirely -- the labels would be a constant 0 and Assumption A8 (informative
+        # outcomes) would fail. So the closing axis is aimed at one of the object's own principal
+        # axes. But WHICH of them is graspable depends on how the object is LYING, and that is a
+        # fact about the world frame, not the object frame.
+        #
+        # A top-down parallel jaw can only close across a roughly HORIZONTAL axis: it approaches
+        # downward, so it cannot pinch an object along the vertical. And it should close across the
+        # NARROW dimension -- you grasp a milk carton across its width, not along its length.
+        #
+        # Selecting the two narrowest axes in the OBJECT frame gets this right for an upright box and
+        # wrong for everything else. A scanned bottle settles on its SIDE: its object-frame "short"
+        # axis is then pointing straight up, the sampler aims the jaws at the vertical, the gripper
+        # cannot close on it, and the grasp fails. Measured on the LIBERO groceries, that alone held
+        # the simulated success rate at 5.5% while the analytic tier -- planning in the same broken
+        # frame -- happily reported 82%, which would have been written up as a spectacular
+        # hallucinated-surface gap rather than as a bug in the sampler.
+        #
+        # So: rank the object's axes by how HORIZONTAL they are in the world after settling, keep
+        # the horizontal ones, and among those prefer the narrow ones.
+        half = self._half(state)  # (B, 3) object-frame half-extents
+        obj_axes = R_obj  # (B, 3, 3): column i is object axis i in world coordinates
+        verticality = obj_axes[:, 2, :].abs()  # (B, 3) |axis . world_z|
+
+        # Score: low is good. Penalize verticality hard (a vertical axis is ungraspable from above),
+        # then prefer narrow axes. Normalizing the width by the largest extent keeps the two terms
+        # commensurate across objects of very different size.
+        width = half / half.max(dim=-1, keepdim=True).values.clamp_min(1e-6)
+        score = 4.0 * verticality + width  # (B, 3)
+        order = score.argsort(dim=-1)  # ascending: order[:, 0] is the best closing axis
+
+        pick = torch.randint(0, 2, (b, n_actions), generator=generator, device=dev)
+        axis_id = torch.gather(order, 1, pick)  # one of the two best axes
         axes = torch.eye(3, device=dev)[axis_id]  # (B, Na, 3), object frame
-        axes = torch.einsum("bij,bnj->bni", R_obj, axes)  # world frame
+        axes = torch.einsum("bij,bnj->bni", R_obj, axes)  # -> world frame
         axes = axes + 0.12 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
+        # Project the closing axis onto the horizontal plane: whatever the object's axes are, the
+        # jaws of a top-down gripper close horizontally.
+        axes[..., 2] = axes[..., 2] * 0.15
         axes = axes / axes.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
         # Build the gripper frame. Local +x is the closing axis; the remaining roll about it is
@@ -524,13 +597,21 @@ class AnalyticGraspOracle(PhysicsOracle):
         q = torch.stack([w, qx, qy, qz], dim=-1)
         q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-8)
 
-        # Grasp the UPPER HALF of the object. A table-top gripper straddles the top of an object;
-        # aiming the tool centre point at the object's CENTRE drives the fingertips below the table
-        # for anything short, and the grasp is then rejected for hitting the floor before it is ever
-        # simulated. That single mistake accounted for the largest share of placement collisions.
-        half_h = torch.exp(state[:, STATE_SLICES["log_size"]][:, 2]).clamp(0.018, 0.038)
+        # Grasp the UPPER PART of the object, measured in the WORLD.
+        #
+        # A table-top gripper straddles the top of an object; aiming the tool centre point at the
+        # object's CENTRE drives the fingertips below the table for anything short, and the grasp is
+        # rejected for hitting the floor before it is ever simulated.
+        #
+        # The height must be the object's extent along WORLD +z, which for a rotated box is the
+        # support function  h_z = sum_i |R[2,i]| * half_i  -- not the object-frame half-extent along
+        # its own z. Using the latter is right only for an upright object and badly wrong for a
+        # bottle lying on its side, where the object's "height" is now its width.
+        half_obj = self._half(state)  # (B, 3)
+        world_half_z = (R_obj[:, 2, :].abs() * half_obj).sum(dim=-1)  # (B,)
+
         lift = torch.zeros(b, n_actions, 3, device=dev)
-        lift[..., 2] = 0.5 * half_h.unsqueeze(1)
+        lift[..., 2] = 0.45 * world_half_z.unsqueeze(1)
         pos = (
             t_obj.unsqueeze(1)
             + lift
