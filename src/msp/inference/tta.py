@@ -31,7 +31,7 @@ import torch
 from torch import Tensor
 
 from msp.belief import Belief, DiagonalGaussianBelief
-from msp.math.divergences import gaussian_nll, log_normal_nll
+from msp.math.divergences import gaussian_nll, zero_inflated_lognormal_nll
 from msp.models.nets import OutcomeHead
 from msp.types import Outcome
 
@@ -125,9 +125,9 @@ def adapt_belief(
                     y.margin.unsqueeze(1).expand_as(pred.margin_mu),
                     pred.margin_mu, pred.margin_logvar,
                 )
-                + log_normal_nll(
+                + zero_inflated_lognormal_nll(
                     y.slip.unsqueeze(1).expand_as(pred.slip_log_mu),
-                    pred.slip_log_mu, pred.slip_log_logvar,
+                    pred.slip_zero_logit, pred.slip_log_mu, pred.slip_log_logvar,
                 )
             ).mean(dim=1).sum()  # mean over K (the expectation), sum over batch
 

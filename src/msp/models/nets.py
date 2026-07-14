@@ -165,8 +165,11 @@ class OutcomeHead(nn.Module):
             nn.Linear(hidden, hidden),
             nn.GELU(),
         )
-        # 5 params: succ_logit, margin_mu, margin_logvar, slip_log_mu, slip_log_logvar
-        self.out = nn.Linear(hidden, 5)
+        # 6 params: succ_logit, margin_mu, margin_logvar,
+        #           slip_zero_logit, slip_log_mu, slip_log_logvar
+        # Slip is ZERO-INFLATED (a held grasp slips exactly zero), so it needs a
+        # Bernoulli "did it slip" head on top of the log-normal magnitude.
+        self.out = nn.Linear(hidden, 6)
 
     def forward(
         self, z: Tensor, actions: Tensor, gripper: Tensor | None = None
@@ -203,16 +206,17 @@ class OutcomeHead(nn.Module):
         elif gripper is not None:
             raise ValueError("gripper supplied but head was built with gripper_dim = 0")
 
-        p = self.out(self.trunk(torch.cat(parts, dim=-1)))  # (B, K, Na, 5)
+        p = self.out(self.trunk(torch.cat(parts, dim=-1)))  # (B, K, Na, 6)
         if squeeze_k:
-            p = p.squeeze(1)  # (B, Na, 5)
+            p = p.squeeze(1)  # (B, Na, 6)
 
         return OutcomeDistribution(
             succ_logit=p[..., 0:1],
             margin_mu=p[..., 1:2],
             margin_logvar=p[..., 2:3],
-            slip_log_mu=p[..., 3:4],
-            slip_log_logvar=p[..., 4:5],
+            slip_zero_logit=p[..., 3:4],
+            slip_log_mu=p[..., 4:5],
+            slip_log_logvar=p[..., 5:6],
         )
 
     def success_probs(

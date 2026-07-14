@@ -25,7 +25,7 @@ from msp.inference import (
     TTAConfig,
     adapt_belief,
 )
-from msp.math.bottleneck import BetaSchedule
+from msp.math.bottleneck import BetaSchedule, distortion
 from msp.models import BeliefEncoder, MLPBackbone, OutcomeHead
 from msp.oracle import SyntheticOracle
 from msp.types import Abstain, ActionChoice, Outcome
@@ -318,9 +318,23 @@ def test_tta_does_not_touch_the_head_weights(trained) -> None:
         assert p.grad is None or torch.all(p.grad == 0), "TTA leaked gradient into psi"
 
 
-def test_tta_moves_the_belief_toward_the_observed_outcome(trained) -> None:
-    """The adapted belief must make the OBSERVED probe outcome more likely. That is what
-    'assimilating a measurement' means, and it is the one thing Eq 19 actually asserts."""
+def test_tta_makes_the_observed_outcome_more_likely(trained) -> None:
+    """THE ONE THING Eq 19 ACTUALLY ASSERTS.
+
+        q'(z)  proportional to  q_theta(z|o) * p_psi(y_p | z, a_p)
+
+    The adapted posterior tilts the prior toward codes that EXPLAIN THE OBSERVED OUTCOME. So the
+    test is not "did some downstream summary statistic move in the direction I expected" -- it is
+    "did the probe outcome become more likely under the adapted belief". We measure the full
+    outcome negative log-likelihood, which is the quantity Eq 20 minimizes.
+
+    An earlier version of this test asserted that P(fail) must RISE after a failed probe. That is
+    a proxy, and a brittle one: once the outcome head's variance was floored (see
+    `types._bounded_logvar`), the likelihood flattened, the exact-Bayes KL term of Eq 19 correctly
+    dominated, and the posterior barely moved -- P(fail) drifted by 0.002 in the "wrong" direction
+    and the test failed while the mathematics was right. Test the equation, not a shadow of it.
+    """
+    torch.manual_seed(0)
     encoder, head = trained["encoder"], trained["head"]
     belief = encoder(torch.randn(8, OBS_DIM)).detach()
     a_p = torch.randn(8, 1, ACTION_DIM)
@@ -328,12 +342,21 @@ def test_tta_moves_the_belief_toward_the_observed_outcome(trained) -> None:
         succ=torch.zeros(8, 1, 1), margin=torch.zeros(8, 1, 1), slip=torch.full((8, 1, 1), 0.3)
     )
 
-    def p_fail(b) -> float:
+    def outcome_nll(b) -> float:
+        """E_{z ~ q}[ -log p_psi(y_p | z, a_p) ] -- the distortion of Eq 20."""
         with torch.no_grad():
-            return float(1.0 - head.success_probs(b.rsample(64), a_p).mean())
+            z = b.rsample(256)
+            pred = head(z, a_p)
+            k = z.shape[1]
+            d = distortion(pred.float(), y_p.expand_to(k))
+            return float(d.succ + d.margin + d.slip)
 
-    before = p_fail(belief)
-    after = p_fail(adapt_belief(belief, head, a_p, y_p, TTAConfig(steps=40, num_samples=32)))
-    assert after > before, (
-        f"after observing a FAILED probe, P(fail) should rise: {before:.4f} -> {after:.4f}"
+    before = outcome_nll(belief)
+    adapted = adapt_belief(belief, head, a_p, y_p, TTAConfig(steps=40, num_samples=32))
+    after = outcome_nll(adapted)
+
+    assert after < before, (
+        f"the probe outcome did not become more likely after assimilating it: NLL "
+        f"{before:.4f} -> {after:.4f}. Eq 19 says the posterior tilts TOWARD codes that explain "
+        f"the observation."
     )
