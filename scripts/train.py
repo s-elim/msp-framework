@@ -19,6 +19,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from msp.build import build_all
 from msp.engine import Evaluator, Trainer
+from msp.engine.trainer import cleanup_distributed, rank, setup_distributed
 from msp.inference import InferenceEngine
 from msp.utils.seed import seed_everything
 
@@ -27,14 +28,23 @@ log = logging.getLogger("msp.train")
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> float:
-    seed_everything(cfg.seed)
-    log.info("\n%s", OmegaConf.to_yaml(cfg))
+    # Under torchrun this initializes the process group and returns this rank's device;
+    # run without torchrun and it returns a single device. Same script either way.
+    device = setup_distributed()
+    seed_everything(cfg.seed + rank())  # decorrelate the ranks' data augmentation
+    if rank() == 0:
+        log.info("\n%s", OmegaConf.to_yaml(cfg))
 
-    b = build_all(cfg)
-    log.info("device=%s  latent_dim=%d  beta=%s", b.device, cfg.model.latent_dim, cfg.train.beta)
+    b = build_all(cfg, device=device)
+    log.info("rank %d  device=%s  latent_dim=%d  beta=%.3g",
+             rank(), b.device, cfg.model.latent_dim, cfg.train.beta_uniform)
 
     trainer = Trainer(b.encoder, b.head, b.loaders["train"], b.loaders["val"], b.train_cfg, b.device)
     metrics = trainer.fit()
+
+    if rank() != 0:
+        cleanup_distributed()
+        return 0.0
     log.info("training done: %s", {k: round(v, 4) for k, v in metrics.items()})
 
     # Calibrate on the HELD-OUT fold, then evaluate. Both are part of training, not an
@@ -53,7 +63,9 @@ def main(cfg: DictConfig) -> float:
              "OK" if report.coverage_holds() else "*** VIOLATED ***")
     log.info("cert. precision = %.4f", report.certified_precision)
     log.info("abstention    = %.4f", report.abstention_rate)
-    log.info("rate / distortion = %.4f / %.4f", report.rate, report.distortion)
+    log.info("rate / distortion = %.4f / %.4f +/- %.4f",
+             report.rate, report.distortion, report.distortion_stderr)
+    cleanup_distributed()
     return report.distortion
 
 

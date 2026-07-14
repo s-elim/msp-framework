@@ -14,9 +14,10 @@ from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from msp.data import SyntheticGraspDataset, collate
-from msp.engine.trainer import TrainConfig
+from msp.engine.trainer import TrainConfig, is_distributed
 from msp.inference import ConformalCalibrator, InferenceConfig
 from msp.math.bottleneck import BetaSchedule
 from msp.models import BeliefEncoder, MLPBackbone, OutcomeHead, ResNetBackbone
@@ -87,23 +88,45 @@ def build_loaders(cfg: Any, oracle: SyntheticOracle) -> dict[str, DataLoader[Any
             boundary_focus=d.boundary_focus,
             seed=seed,
         )
+        # Under DDP the training fold must be SHARDED, not replicated, or every rank sees
+        # the same data and the effective batch is unchanged.
+        sampler = None
+        if is_distributed() and name == "train":
+            sampler = DistributedSampler(ds, shuffle=True, drop_last=True)
+
         out[name] = DataLoader(
             ds,
             batch_size=d.batch_size,
-            shuffle=(name == "train"),
+            shuffle=(name == "train" and sampler is None),
+            sampler=sampler,
             num_workers=d.num_workers,
             collate_fn=collate,
             pin_memory=True,
             drop_last=(name == "train"),
             persistent_workers=d.num_workers > 0,
+            worker_init_fn=_seed_worker,  # workers were previously unseeded => irreproducible
+            generator=torch.Generator().manual_seed(cfg.seed),
         )
     return out
 
 
-def build_all(cfg: Any) -> Bundle:
-    device = torch.device(
-        cfg.device if torch.cuda.is_available() or cfg.device == "cpu" else "cpu"
-    )
+def _seed_worker(worker_id: int) -> None:
+    """Seed each DataLoader worker. Without this, anything random inside a worker is not
+    reproducible across runs, which quietly breaks the reproducibility claim."""
+    import random
+
+    import numpy as np
+
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def build_all(cfg: Any, device: torch.device | None = None) -> Bundle:
+    if device is None:
+        device = torch.device(
+            cfg.device if torch.cuda.is_available() or cfg.device == "cpu" else "cpu"
+        )
     oracle = build_oracle(cfg)
     encoder, head = build_models(cfg, cfg.data.obs_dim)
     loaders = build_loaders(cfg, oracle)
@@ -122,6 +145,7 @@ def build_all(cfg: Any) -> Bundle:
         ),
         out_dir=cfg.out_dir,
         seed=cfg.seed,
+        compile=cfg.train.get("compile", False),
     )
     return Bundle(
         oracle=oracle,

@@ -64,6 +64,19 @@ class Outcome:
     def to(self, device: torch.device | str) -> Outcome:
         return Outcome(self.succ.to(device), self.margin.to(device), self.slip.to(device))
 
+    def expand_to(self, k: int) -> Outcome:
+        """Broadcast a realized (B, Na, 1) outcome against a K-sample axis -> (B, K, Na, 1).
+
+        The realized outcome does not depend on which posterior sample z_k produced the
+        prediction, so it is simply repeated. Needed to average the distortion over K draws
+        when estimating a rate-distortion frontier point.
+        """
+        return Outcome(
+            succ=self.succ.unsqueeze(1).expand(-1, k, -1, -1),
+            margin=self.margin.unsqueeze(1).expand(-1, k, -1, -1),
+            slip=self.slip.unsqueeze(1).expand(-1, k, -1, -1),
+        )
+
     @property
     def shape(self) -> torch.Size:
         return self.succ.shape
@@ -115,6 +128,32 @@ class OutcomeDistribution:
     def success_prob(self) -> Tensor:
         """sigma_psi(z, a) = sigmoid(f_psi(z, a)). Formalization Eq 13."""
         return torch.sigmoid(self.succ_logit)
+
+    def float(self) -> OutcomeDistribution:
+        """Upcast every parameter to fp32.
+
+        Needed because the network may run under bf16 autocast while the LOSS must not.
+        bf16 carries ~8 mantissa bits (2-3 decimal digits), and the rate and distortion are
+        not merely training signals here -- they are the coordinates plotted on the paper's
+        rate-distortion frontier. Training in bf16 is correct; *measuring* in bf16 is not.
+        """
+        return OutcomeDistribution(
+            succ_logit=self.succ_logit.float(),
+            margin_mu=self.margin_mu.float(),
+            margin_logvar=self.margin_logvar.float(),
+            slip_log_mu=self.slip_log_mu.float(),
+            slip_log_logvar=self.slip_log_logvar.float(),
+        )
+
+    def expand_to(self, k: int) -> OutcomeDistribution:
+        """Broadcast a (B, Na, 1) distribution against a K-sample axis -> (B, K, Na, 1)."""
+        return OutcomeDistribution(
+            succ_logit=self.succ_logit.unsqueeze(1).expand(-1, k, -1, -1),
+            margin_mu=self.margin_mu.unsqueeze(1).expand(-1, k, -1, -1),
+            margin_logvar=self.margin_logvar.unsqueeze(1).expand(-1, k, -1, -1),
+            slip_log_mu=self.slip_log_mu.unsqueeze(1).expand(-1, k, -1, -1),
+            slip_log_logvar=self.slip_log_logvar.unsqueeze(1).expand(-1, k, -1, -1),
+        )
 
 
 class Abstain:

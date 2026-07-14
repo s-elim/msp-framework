@@ -67,6 +67,29 @@ The last row is reported because it is true. On a 4-epoch run the latent-dimensi
 and does not demonstrate the saturation the hypothesis predicts. It needs a real training budget
 and error bars before it can be claimed. Do not put it in a paper until it does.
 
+### The tier gap: the analytic prior is a poor predictor of real lift outcome
+
+Measured on 320 grasps, analytic Ferrari-Canny prior vs. the MuJoCo rigid-body simulator on the
+**same** `(x, a)`:
+
+| | |
+|---|---|
+| Success agreement | **0.42** |
+| Analytic success rate | 0.68 |
+| Simulated success rate | 0.25 |
+| **Analytic false-positive rate** | **0.74** |
+| Slip correlation | −0.02 |
+
+The analytic tier says "force-closed, good grasp" and the object falls out of the hand **three
+times in four**. Its quasi-static slip model is essentially uncorrelated with dynamic slip.
+
+This is the in-simulation analogue of the sim-to-real sufficiency gap, and it is the most important
+number the oracle produces: it says quantitatively that **training the encoder on the analytic tier
+alone would teach it to be confidently wrong.** It is exactly why Section 11 demands the composition
+rather than either tier alone, and exactly the concern behind reviewer attacks 3 and 11 ("force
+closure computed on estimated geometry is not grounded in outcome"). `CompositeOracle.tier_gap()`
+computes it. (Caveat: the simulator itself is not yet validated — see limitations.)
+
 ---
 
 ## Repository layout
@@ -126,12 +149,21 @@ and any β sweep would have traced the frontier backwards.
 - **`DiagonalGaussianBelief` is unimodal.** Theorem 5 requires the belief on a symmetric object to
   be supported on a *group orbit*. A mixture or flow posterior is needed there; the `Belief` ABC
   exists so it can be dropped in without touching anything else.
-- **`SyntheticOracle` is not physics.** It is a world with a *known answer*, for validating the
-  diagnostics. A real Ferrari-Canny + rigid-body + real-residual operator is the next build, and
-  it slots in behind `PhysicsOracle` without changing a line above it.
-- **Active perception is not wired.** `AcquisitionNet` exists but Eq 17/18 (the look-ahead target)
-  need the renderer. The net refuses to run until `fitted` is set, rather than steering a camera
-  with random weights as the old one did.
+- **The MuJoCo tier runs but is NOT validated.** `MuJoCoOracle` produces non-degenerate outcomes
+  (25% success, 9 ms/rollout), but a *successfully lifted* object still translates ~0.10 m relative
+  to the hand, which a rigidly-carried object should not. That failure is pinned as a strict `xfail`
+  in `tests/oracle/test_mujoco.py` rather than hidden. **Do not produce a paper number from it until
+  that test passes.**
+- **Tier 3 does not exist.** A residual fit to a few thousand *real* robot grasp outcomes is the
+  tier your reviewers say carries the paper. It is deliberately absent rather than stubbed, because
+  a stub would let someone believe the grounding exists.
+- **Theorem 4 is vacuous for a generic box.** `rank J(x) = d_X`, so nothing is continuously
+  unidentifiable: pose, size, friction, mass and COM all change some outcome. The theorem has content
+  only for objects with a genuine outcome-invariance — a **cylinder**, where rotation about the
+  symmetry axis gives `dim ker J = 1`. This limits the theorem's reach and belongs in the paper.
+- **Active perception is not wired.** Eq 17/18 need a rendered look-ahead to produce `IG_true`, and
+  there is no renderer. The `AcquisitionNet` was **removed** rather than shipped untrainable — the
+  audited repo kept one and took an argmax over its random weights to steer a camera.
 
 ## License
 

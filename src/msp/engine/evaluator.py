@@ -42,6 +42,8 @@ class EvalReport:
     mean_ambiguity: float  # E[U(o)]
     rate: float  # R -- x-axis of the rate-distortion frontier
     distortion: float  # D -- y-axis
+    distortion_stderr: float  # SE of D across batches. A frontier without error bars
+    #                           is not falsifiable, so we always carry one.
     n_points: int
 
     def to_metrics(self) -> dict[str, float]:
@@ -102,8 +104,10 @@ class Evaluator:
         n_cert = n_cert_ok = 0
         n_actions = 0
         abstain = scenes = 0
-        amb_sum = rate_sum = dist_sum = 0.0
+        amb_sum = rate_sum = 0.0
+        dists: list[float] = []
         n_batches = 0
+        k = self.engine.cfg.num_samples
 
         for batch in test_loader:
             obs, actions, y = self._batch(batch)
@@ -132,15 +136,27 @@ class Evaluator:
             amb_sum += float(scored.ambiguity.mean())
 
             # --- rate-distortion frontier coordinates ---
-            z = belief.rsample(1).squeeze(1)
+            # D is a Monte Carlo expectation over z ~ q(z|o). Estimating it from a SINGLE
+            # posterior draw -- as an earlier version did -- gives an estimator whose variance
+            # is large enough to dominate the frontier it is supposed to trace. The frontier
+            # is the paper's minimality evidence; a noisy frontier is an unfalsifiable one.
+            # We use the same K the decision rule uses, and we report a standard error.
+            z = belief.rsample(k)  # (B, K, d)
+            pred = self.engine.head(z, actions)  # (B, K, Na, 1)
             terms = vib_objective(
-                self.engine.head(z, actions), y, belief.mu, belief.logvar, beta
+                pred.float(),
+                y.expand_to(k),
+                belief.mu.float(),
+                belief.logvar.float(),
+                beta,
             )
             rate_sum += float(terms.rate)
-            dist_sum += float(terms.total_distortion)
+            dists.append(float(terms.total_distortion))
             n_batches += 1
 
         nb = max(1, n_batches)
+        d_mean = sum(dists) / nb
+        d_var = sum((d - d_mean) ** 2 for d in dists) / max(1, nb - 1) if nb > 1 else 0.0
         return EvalReport(
             coverage=n_cov_ok / max(1, n_cov),
             target_coverage=1.0 - cal.alpha,
@@ -149,6 +165,7 @@ class Evaluator:
             certified_fraction=n_cert / max(1, n_actions),
             mean_ambiguity=amb_sum / nb,
             rate=rate_sum / nb,
-            distortion=dist_sum / nb,
+            distortion=d_mean,
+            distortion_stderr=(d_var / nb) ** 0.5,
             n_points=n_cov,
         )

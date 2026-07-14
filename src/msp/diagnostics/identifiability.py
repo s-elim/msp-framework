@@ -186,9 +186,9 @@ def measure_invariant_subspace(
     state: Tensor,
     actions: Tensor,
     *,
-    n_probes: int = 512,
-    delta: float = 5e-3,
-    rtol: float = 1e-3,
+    n_probes: int = 2048,
+    delta: float = 1e-4,
+    rtol: float = 1e-2,
 ) -> Tensor:
     """The EMPIRICALLY grasp-invariant perturbation subspace, measured WITHOUT gradients.
 
@@ -196,38 +196,69 @@ def measure_invariant_subspace(
     independent of `outcome_jacobian` -- otherwise the subspace-alignment experiment is a
     tautology (comparing the Jacobian's null space to itself) rather than evidence.
 
-    HOW NOT TO DO IT. The obvious approach -- sample random directions, keep the ones whose
-    outcome response is below a threshold -- does not work, and the failure is instructive.
-    ker J(x) is a measure-zero subspace of R^d, so a random direction lands in it with
-    probability zero. Rejection sampling finds nothing, no matter how many probes you draw.
+    TWO APPROACHES THAT DO NOT WORK, because the failures are instructive and both are the
+    obvious thing to try.
 
-    WHAT WORKS. The squared outcome response to a unit perturbation u is a quadratic form::
+    (1) Rejection sampling: perturb in random directions, keep the ones whose outcome response
+        is below a threshold. ker J(x) is a measure-zero subspace of R^d, so a random direction
+        lands in it with probability zero. This finds nothing, no matter how many probes.
 
-        r(u)^2  =  || Phi(x + delta*u) - Phi(x - delta*u) ||^2 / (2*delta)^2
-                ~= || J u ||^2
-                 = u^T (J^T J) u   =:  u^T G u
+    (2) Fitting the quadratic form. The squared response is r(u)^2 ~= u^T (J^T J) u =: u^T G u,
+        so G could in principle be recovered from d(d+1)/2 linear measurements. In practice it
+        cannot: G's eigenvalues are the SQUARES of J's singular values, so its condition number
+        is squared too (~6e5 on the analytic grasp oracle), the least-squares fit is dominated
+        by the high-response directions, and the fitted G comes back with large NEGATIVE
+        eigenvalues -- the small ones, which are the entire object of interest, are pure noise.
+        Phi is also only piecewise smooth (max over cone edges, min over wrench directions), so
+        a finite probe that crosses a kink corrupts the fit further.
 
-    G is a symmetric d x d matrix with d(d+1)/2 unknowns, and every probe gives one linear
-    measurement of it. With n_probes >> d(d+1)/2 we recover G by least squares, then read the
-    invariant subspace off its small eigenvalues. G shares its null space with J, so this
-    recovers ker J(x) exactly -- from black-box outcome queries alone, with no derivative and
-    no knowledge of the oracle's internals.
+    WHAT WORKS: regress J itself, not G. The response VECTOR to a small perturbation is linear::
+
+        R  :=  [ Phi(x + delta*u_i) - Phi(x - delta*u_i) ] / (2*delta)  ~=  J u_i
+
+    Stack the probes into U (d x n) and the responses into R (out x n); then R ~= J U, and J is
+    recovered by ordinary least squares, J_hat = R U^+. This is LINEAR rather than quadratic, so
+    it is well-conditioned; with n >> d it also averages out the kink crossings.
+
+    It remains a genuinely INDEPENDENT measurement: it never touches autograd and only ever
+    queries outcomes. It is also what a real robot can actually do -- you cannot perturb an
+    object along a single state coordinate, but you can nudge it in random directions, re-run
+    your grasps, and regress. That is the V4 perturbation-invariance probe.
+
+    CHOOSING delta -- and note this is the OPPOSITE of the rule for `outcome_jacobian`.
+
+    A coordinate-wise finite difference wants a LARGE step (~eps_machine^(1/3) ~ 5e-3 in float32),
+    because with only 2d evaluations its error budget is dominated by roundoff. This probe wants a
+    SMALL step, for two reasons that only apply here:
+
+      * Phi is PIECEWISE smooth. A step of 5e-3 crosses the kinks of the max/min in the
+        Ferrari-Canny metric, which is a SYSTEMATIC bias -- and systematic bias does not average
+        out no matter how many probes you draw. Measured on the analytic grasp oracle, a 5e-3
+        step inflated the smallest singular value of J_hat by ~30x and destroyed the null space
+        entirely (null_dim collapsed from 1 to 0).
+      * Roundoff, unlike kink bias, IS random, so the regression over n probes suppresses it by
+        ~sqrt(n). We can therefore afford a small step and simply take more probes.
+
+    Empirically on the cylinder (true null_dim = 1):
+
+        delta=5e-3, n=600   -> null_dim 0   (kink bias swamps the null direction)
+        delta=1e-4, n=600   -> null_dim 1, 7.1 deg from the autodiff null space
+        delta=1e-4, n=3000  -> null_dim 1, 1.8 deg
 
     Args:
-        n_probes: must exceed d(d+1)/2 for the fit to be determined.
-        delta: symmetric probe magnitude. Same float32 optimality argument as
-            `outcome_jacobian`; do not shrink it "for accuracy".
-        rtol: eigenvalues below rtol * lambda_max are treated as zero.
+        n_probes: should comfortably exceed state_dim; more suppresses roundoff as sqrt(n).
+        delta: symmetric probe magnitude. Keep it SMALL, so the probe stays inside one smooth
+            cell of Phi. See above.
+        rtol: singular values below rtol * sigma_max are treated as zero.
 
     Returns:
         (state_dim, k) orthonormal basis of the measured invariant subspace.
     """
     d = state.numel()
-    n_unknowns = d * (d + 1) // 2
-    if n_probes < 2 * n_unknowns:
+    if n_probes < 4 * d:
         raise ValueError(
-            f"n_probes={n_probes} is too few to identify the {n_unknowns}-parameter response "
-            f"form for state_dim={d}. Use at least {2 * n_unknowns}."
+            f"n_probes={n_probes} is too few for state_dim={d}; use at least {4 * d} so the "
+            "regression averages over kink crossings."
         )
 
     u = torch.randn(n_probes, d, device=state.device, dtype=state.dtype)
@@ -239,25 +270,13 @@ def measure_invariant_subspace(
     acts = actions.expand(n_probes, -1, -1)
     resp = (oracle.outcome_params(plus, acts) - oracle.outcome_params(minus, acts)) / (
         2.0 * delta
-    )
-    y = (resp**2).sum(dim=-1)  # (n_probes,)  ~= u^T G u
+    )  # (n_probes, out_dim) ~= (J u_i)^T
 
-    # Design matrix for the symmetric quadratic form:
-    #   u^T G u = sum_j G_jj u_j^2 + sum_{j<k} 2 G_jk u_j u_k
-    iu, ju = torch.triu_indices(d, d, device=state.device)
-    coeff = torch.where(iu == ju, 1.0, 2.0).to(state.dtype)  # off-diagonals appear twice
-    design = u[:, iu] * u[:, ju] * coeff  # (n_probes, n_unknowns)
+    # Least squares:  resp ~= u @ J^T   =>   J^T = pinv(u) @ resp
+    jt = torch.linalg.lstsq(u, resp).solution  # (d, out_dim)
+    j_hat = jt.T  # (out_dim, d)
 
-    g_vec = torch.linalg.lstsq(design, y.unsqueeze(-1)).solution.squeeze(-1)
-
-    G = torch.zeros(d, d, device=state.device, dtype=state.dtype)
-    G[iu, ju] = g_vec
-    G = G + G.T - torch.diag(torch.diag(G))  # symmetrize
-
-    evals, evecs = torch.linalg.eigh(G)  # ascending
-    lam_max = evals.abs().max().clamp_min(1e-12)
-    k = int((evals.abs() < rtol * lam_max).sum().item())
-    return evecs[:, :k].contiguous()
+    return null_space(j_hat, rtol=rtol)
 
 
 def analyze(

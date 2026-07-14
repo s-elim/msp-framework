@@ -20,8 +20,7 @@ from torch import Tensor
 from msp.belief import Belief, DiagonalGaussianBelief
 from msp.types import OutcomeDistribution
 
-__all__ = ["Backbone", "MLPBackbone", "ResNetBackbone", "BeliefEncoder", "OutcomeHead",
-           "AcquisitionNet"]
+__all__ = ["Backbone", "MLPBackbone", "ResNetBackbone", "BeliefEncoder", "OutcomeHead"]
 
 
 # ======================================================================================
@@ -222,41 +221,3 @@ class OutcomeHead(nn.Module):
         """sigma_psi(z_k, a) for the full cross product. (B, K, Na). Feeds Eq 13/14."""
         dist = self.forward(z, actions, gripper=gripper)
         return dist.success_prob().squeeze(-1)
-
-
-# ======================================================================================
-# The amortized acquisition network (Eq 18)
-# ======================================================================================
-
-
-class AcquisitionNet(nn.Module):
-    """alpha_omega(o, b) ~= IG(b). Formalization Eq 18.
-
-    The audited repo shipped this network but NEVER TRAINED IT -- no loss, no target, no
-    look-ahead -- and then took an argmax over its randomly-initialized output to steer the
-    camera. `msp.inference.active` will not accept an untrained instance: `fitted` must be
-    set by the training loop, and the selector refuses to run without it.
-    """
-
-    def __init__(self, obs_feature_dim: int, view_dim: int = 6, hidden: int = 256) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_feature_dim + view_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1),
-        )
-        self.register_buffer("fitted", torch.tensor(False))
-
-    def forward(self, obs_features: Tensor, views: Tensor) -> Tensor:
-        """obs_features: (B, F).  views: (B, Nb, view_dim).  Returns (B, Nb) -- NOT (B, Nb, 1).
-
-        The trailing singleton is squeezed HERE, at the source. The audited selector called
-        `argmax(dim=-1)` on a (B, Nb, 1) tensor, reducing over the size-1 axis and returning
-        a constant zero -- active perception always chose view 0. Returning the shape the
-        caller actually needs removes the opportunity.
-        """
-        b, nb, _ = views.shape
-        f = obs_features.unsqueeze(1).expand(b, nb, -1)
-        return self.net(torch.cat([f, views], dim=-1)).squeeze(-1)

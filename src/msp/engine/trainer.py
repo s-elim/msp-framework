@@ -1,23 +1,29 @@
 """Training loop for the two learned modules.
 
-Engineering choices worth stating, since the audited trainer had none of them:
+Three engineering commitments, each of which the audited trainer got wrong or omitted:
 
-* AMP (bf16) with a GradScaler only when fp16 is selected. bf16 needs no scaler and has the
-  dynamic range that the Gaussian NLL wants -- an fp16 exp(-logvar) is a good way to meet
-  inf. Default is bf16 on Ampere+.
-* Gradient clipping on the JOINT parameter set, not on encoder and head separately. Clipping
-  two groups to max_norm=1.0 each permits a joint norm of 2.0, which is not what
-  "clip to 1.0" means.
-* A real validation pass, a real best-checkpoint, and a real resume. The audited trainer
-  stored `val_loader` and never used it, wrote `checkpoint_epoch_N.pth` into the CWD, and
-  had no `best.pth` -- while the cookbook instructed users to load one.
-* DDP-aware: rank-0-only logging and checkpointing, and the sampler's epoch is set so that
-  shuffling actually differs across epochs (a classic silent bug).
+* THE NETWORK RUNS IN BF16; THE LOSS DOES NOT. `autocast` wraps only the encoder and head.
+  The rate and distortion are then computed in fp32, because they are not merely training
+  signals -- they are the coordinates plotted on the paper's rate-distortion frontier, and
+  bf16 carries ~8 mantissa bits (2-3 decimal digits). Training in reduced precision is
+  correct; *measuring* in reduced precision is not. A GradScaler is used only for fp16;
+  bf16 has the dynamic range and needs none.
+
+* GRADIENTS ARE CLIPPED ON THE JOINT PARAMETER SET. Clipping encoder and head separately to
+  max_norm=1.0 each permits a joint norm of 2.0, which is not what "clip to 1.0" means.
+
+* DDP IS ACTUALLY WIRED. `setup_distributed()` initializes the process group and the modules
+  are wrapped in `DistributedDataParallel`; validation metrics are all-reduced so rank 0 does
+  not report only its own shard; and `sampler.set_epoch` is called so shuffling differs
+  across epochs. The previous version had the rank *guards* but no DDP wrapping and no
+  launcher -- it advertised multi-GPU and silently ran on one. Launch with
+  `scripts/launch_ddp.sh` or `torchrun`.
 """
 
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,11 +33,67 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from msp.math.bottleneck import BetaSchedule, vib_objective
+from msp.math.bottleneck import BetaSchedule, VIBTerms, vib_objective
 from msp.models.nets import BeliefEncoder, OutcomeHead
 from msp.types import Outcome
 
-__all__ = ["TrainConfig", "Trainer"]
+__all__ = ["TrainConfig", "Trainer", "setup_distributed", "cleanup_distributed",
+           "is_distributed", "rank", "world_size"]
+
+
+# ======================================================================================
+# Distributed helpers
+# ======================================================================================
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def rank() -> int:
+    return dist.get_rank() if is_distributed() else 0
+
+
+def world_size() -> int:
+    return dist.get_world_size() if is_distributed() else 1
+
+
+def setup_distributed() -> torch.device:
+    """Initialize the process group from torchrun's environment. Returns this rank's device.
+
+    Falls back to single-device cleanly when not launched under torchrun, so the same
+    `scripts/train.py` works both ways.
+    """
+    if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    dist.init_process_group(backend=backend)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        return torch.device(f"cuda:{local_rank}")
+    return torch.device("cpu")
+
+
+def cleanup_distributed() -> None:
+    if is_distributed():
+        dist.destroy_process_group()
+
+
+def _all_reduce_mean(metrics: dict[str, float], device: torch.device) -> dict[str, float]:
+    """Average metrics across ranks. Without this, rank 0 reports only its own shard, which
+    is a quietly wrong validation curve on a multi-GPU run."""
+    if not is_distributed() or not metrics:
+        return metrics
+    keys = sorted(metrics)
+    t = torch.tensor([metrics[k] for k in keys], device=device, dtype=torch.float64)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    t /= world_size()
+    return dict(zip(keys, t.tolist(), strict=True))
+
+
+# ======================================================================================
 
 
 @dataclass
@@ -44,16 +106,8 @@ class TrainConfig:
     amp_dtype: str = "bf16"  # "bf16" | "fp16" | "off"
     beta: BetaSchedule = field(default_factory=BetaSchedule)
     out_dir: str = "outputs/run"
-    log_every: int = 50
     seed: int = 0
-
-
-def _is_dist() -> bool:
-    return dist.is_available() and dist.is_initialized()
-
-
-def _rank() -> int:
-    return dist.get_rank() if _is_dist() else 0
+    compile: bool = False
 
 
 class Trainer:
@@ -66,22 +120,39 @@ class Trainer:
         cfg: TrainConfig,
         device: torch.device,
     ) -> None:
-        self.encoder, self.head = encoder.to(device), head.to(device)
-        self.train_loader, self.val_loader = train_loader, val_loader
-        self.cfg, self.device = cfg, device
+        self.device = device
+        self.cfg = cfg
 
-        self.params = list(self.encoder.parameters()) + list(self.head.parameters())
-        self.opt = torch.optim.AdamW(self.params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+        encoder, head = encoder.to(device), head.to(device)
+        if cfg.compile and device.type == "cuda":
+            encoder = torch.compile(encoder)  # type: ignore[assignment]
+            head = torch.compile(head)  # type: ignore[assignment]
+
+        # Parameters must be collected BEFORE the DDP wrap, so the optimizer and the
+        # clipper see the real leaves rather than DDP's replicas.
+        self.params = list(encoder.parameters()) + list(head.parameters())
+
+        if is_distributed():
+            ids = [device.index] if device.type == "cuda" else None
+            encoder = nn.parallel.DistributedDataParallel(encoder, device_ids=ids)
+            head = nn.parallel.DistributedDataParallel(head, device_ids=ids)
+
+        self.encoder, self.head = encoder, head
+        self.train_loader, self.val_loader = train_loader, val_loader
+
+        self.opt = torch.optim.AdamW(
+            self.params, lr=cfg.lr, weight_decay=cfg.weight_decay,
+            fused=(device.type == "cuda"),
+        )
 
         self.amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(cfg.amp_dtype)
         self.use_amp = self.amp_dtype is not None and device.type == "cuda"
-        # A GradScaler is required for fp16 and HARMFUL/unnecessary for bf16.
         self.scaler = torch.amp.GradScaler(
             "cuda", enabled=self.use_amp and self.amp_dtype is torch.float16
         )
 
         self.out_dir = Path(cfg.out_dir)
-        if _rank() == 0:
+        if rank() == 0:
             self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.best_val = math.inf
@@ -90,7 +161,7 @@ class Trainer:
     # -- schedule ------------------------------------------------------------
 
     def _lr_at(self, epoch: int) -> float:
-        """Linear warmup then cosine decay to 1% of peak."""
+        """Linear warmup, then cosine decay to 1% of peak."""
         w = self.cfg.warmup_epochs
         if epoch < w:
             return self.cfg.lr * (epoch + 1) / max(1, w)
@@ -99,7 +170,7 @@ class Trainer:
 
     # -- one step ------------------------------------------------------------
 
-    def _forward(self, batch: dict[str, Any]) -> Any:
+    def _forward(self, batch: dict[str, Any]) -> VIBTerms:
         obs = batch["observation"].to(self.device, non_blocking=True)
         actions = batch["actions"].to(self.device, non_blocking=True)
         y = Outcome(
@@ -111,12 +182,22 @@ class Trainer:
         if weights is not None:
             weights = weights.to(self.device, non_blocking=True)
 
-        belief = self.encoder(obs)
-        z = belief.rsample(1).squeeze(1)  # one sample per scene, as Alg 1 prescribes
-        pred = self.head(z, actions)
-        return vib_objective(
-            pred, y, belief.mu, belief.logvar, self.cfg.beta, weights=weights
-        )
+        # --- network: reduced precision is fine here ---
+        with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
+            belief = self.encoder(obs)
+            z = belief.rsample(1).squeeze(1)  # one sample per scene, as Alg 1 prescribes
+            pred = self.head(z, actions)
+
+        # --- loss: fp32, always. These numbers get PLOTTED. ---
+        with torch.autocast("cuda", enabled=False):
+            return vib_objective(
+                pred.float(),
+                y,
+                belief.mu.float(),
+                belief.logvar.float(),
+                self.cfg.beta,
+                weights=weights,
+            )
 
     def train_epoch(self) -> dict[str, float]:
         self.encoder.train()
@@ -133,14 +214,11 @@ class Trainer:
         n = 0
         for batch in self.train_loader:
             self.opt.zero_grad(set_to_none=True)
-
-            with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
-                terms = self._forward(batch)
+            terms = self._forward(batch)
 
             self.scaler.scale(terms.loss).backward()
             self.scaler.unscale_(self.opt)
-            # Clip the JOINT parameter set.
-            torch.nn.utils.clip_grad_norm_(self.params, self.cfg.grad_clip)
+            torch.nn.utils.clip_grad_norm_(self.params, self.cfg.grad_clip)  # JOINT norm
             self.scaler.step(self.opt)
             self.scaler.update()
 
@@ -149,6 +227,7 @@ class Trainer:
             n += 1
 
         out = {k: v / max(1, n) for k, v in totals.items()}
+        out = _all_reduce_mean(out, self.device)
         out["lr"] = self._lr_at(self.epoch)
         return out
 
@@ -161,17 +240,16 @@ class Trainer:
         totals: dict[str, float] = {}
         n = 0
         for batch in self.val_loader:
-            with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
-                terms = self._forward(batch)
+            terms = self._forward(batch)
             for k, v in terms.to_metrics().items():
                 totals[f"val/{k}"] = totals.get(f"val/{k}", 0.0) + v
             n += 1
-        return {k: v / max(1, n) for k, v in totals.items()}
+        return _all_reduce_mean({k: v / max(1, n) for k, v in totals.items()}, self.device)
 
     # -- checkpoints ---------------------------------------------------------
 
     def save(self, name: str, extra: dict[str, Any] | None = None) -> Path | None:
-        if _rank() != 0:
+        if rank() != 0:
             return None
         path = self.out_dir / name
         torch.save(
@@ -182,7 +260,12 @@ class Trainer:
                 "optimizer": self.opt.state_dict(),
                 "scaler": self.scaler.state_dict(),
                 "best_val": self.best_val,
-                "config": self.cfg.__dict__ | {"beta": self.cfg.beta.__dict__},
+                # RNG state, so a resumed run is bit-exact rather than merely similar.
+                "rng_cpu": torch.get_rng_state(),
+                "rng_cuda": (
+                    torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+                ),
+                "git_sha": _git_sha(),
                 **(extra or {}),
             },
             path,
@@ -198,16 +281,19 @@ class Trainer:
             self.scaler.load_state_dict(ck["scaler"])
             self.epoch = ck["epoch"] + 1
             self.best_val = ck.get("best_val", math.inf)
+            if ck.get("rng_cpu") is not None:
+                torch.set_rng_state(ck["rng_cpu"].cpu())
+            if ck.get("rng_cuda") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all([s.cpu() for s in ck["rng_cuda"]])
 
     # -- driver --------------------------------------------------------------
 
     def fit(self, logger: Any = None) -> dict[str, float]:
         metrics: dict[str, float] = {}
         while self.epoch < self.cfg.epochs:
-            metrics = self.train_epoch()
-            metrics |= self.validate()
+            metrics = self.train_epoch() | self.validate()
 
-            if _rank() == 0:
+            if rank() == 0:
                 if logger is not None:
                     logger.log(metrics, step=self.epoch)
                 key = metrics.get("val/loss/total", metrics.get("loss/total", math.inf))
@@ -221,4 +307,18 @@ class Trainer:
 
 
 def _unwrap(m: nn.Module) -> nn.Module:
-    return m.module if isinstance(m, nn.parallel.DistributedDataParallel) else m
+    m = getattr(m, "module", m)  # DDP
+    return getattr(m, "_orig_mod", m)  # torch.compile
+
+
+def _git_sha() -> str:
+    """Record the commit that produced a checkpoint. A number in a paper that cannot be
+    traced back to a commit is not reproducible."""
+    import subprocess
+
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
+        ).strip()
+    except Exception:
+        return "unknown"

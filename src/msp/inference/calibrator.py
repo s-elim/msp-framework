@@ -123,11 +123,6 @@ class ConformalCalibrator:
             self._aci.update(miscovered=miscovered)
         return miscovered
 
-    def recalibrate_from_scores(self, scores: Tensor) -> float:
-        """Recompute q_hat at the CURRENT ACI level. Call after `observe` in a drifting
-        deployment, using a rolling window of recent nonconformity scores."""
-        self.q_hat = conformal_quantile(scores, self.effective_alpha)
-        return self.q_hat
 
     # -- persistence ---------------------------------------------------------
 

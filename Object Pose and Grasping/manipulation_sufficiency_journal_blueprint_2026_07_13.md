@@ -192,11 +192,23 @@ Value-of-information functional (C3). Define epistemic ambiguity U(o) = E_{a}[ V
 
 and active perception selects a_sense* = argmax IG. Test-time adaptation, after a probe returns an outcome y_obs under action a_probe, updates the belief by
 
-  min_{z}  - log M'_psi(y_obs | z, a_probe)  +  KL( q(z | o) || prior ),
+  min_{mu', sigma'}  E_{z ~ q'}[ - log M'_psi(y_obs | z, a_probe) ]  +  KL( q'(z) || q(z | o) ),
 
-a few gradient steps that make z consistent with what the interaction revealed. Both optimize the same quantity, the reduction of outcome-class ambiguity, one by choosing the measurement and the other by assimilating it. This is value of information computed in outcome space, which is why it targets manipulation-relevant disambiguation rather than geometric coverage.
+optimizing over the parameters of a variational posterior q' = N(mu', diag sigma'^2) initialized at q(z|o), for a few gradient steps inside a trust region. The stationary point is the exact Bayes update q'(z) proportional to q(z|o) * M'_psi(y_obs | z, a_probe), which is why the KL coefficient must be exactly 1.
 
-Conformal outcomes (C4). On a calibration set of size n, compute nonconformity scores alpha_i = 1 - hat p(y_i | z_i, a_i). For tolerance alpha, the threshold q_hat is the ceil((n+1)(1-alpha))/n empirical quantile of the scores. The action set C_alpha(o) = { a : max_z hat p(success | z, a) >= 1 - q_hat } contains a successful action with probability at least 1 - alpha under exchangeability. If C_alpha is empty, MSP abstains. Physical interpretation: the robot certifies "there exists a grasp I can execute safely" or declines, a guarantee about the world located in perception rather than assumed by the controller.
+[Corrected. An earlier version of this section wrote `min_z  - log M'(y_obs|z,a_probe) + KL( q(z|o) || prior )`. That objective is degenerate in two ways: it minimizes over a point z rather than over the parameters of a posterior, so the belief's spread cannot adapt; and its regularizer KL(q(z|o) || prior) does not depend on the optimization variable at all, so it is a constant and the objective collapses to unregularized maximum likelihood on a single probe. The corrected form above matches Eq 20 of the formalization, which is the authoritative statement.]
+
+Both optimize the same quantity, the reduction of outcome-class ambiguity, one by choosing the measurement and the other by assimilating it. This is value of information computed in outcome space, which is why it targets manipulation-relevant disambiguation rather than geometric coverage.
+
+Conformal outcomes (C4). On a calibration set of size n, compute nonconformity scores alpha_i = 1 - hat p(y_i | z_i, a_i). For tolerance alpha, the threshold q_hat is the ceil((n+1)(1-alpha))-th order statistic of the scores (the order statistic, not an interpolated quantile: the finite-sample proof is stated for the former). Write s(o,a) = E_{z ~ q}[ sigma_psi(z,a) ], the belief-averaged success probability of Eq 13. The certified action set is
+
+  A_cert(o) = { a : (1 - s(o,a)) <= q_hat  AND  s(o,a) > q_hat },
+
+i.e. the conformal prediction set C(o,a) is the singleton {1}. If A_cert is empty, MSP abstains.
+
+[Corrected on two counts. First, an earlier version wrote `max_z hat p(success | z, a)`. A max over posterior samples is an OPTIMISTIC statistic: it certifies an action if any single latent sample predicts success, so under exactly the high epistemic spread that abstention exists to handle, it certifies nearly everything. The formalization's belief-average s(o,a) is the correct statistic. Second, an earlier version required only `>= 1 - q_hat`, which tests whether label 1 is in the set but not whether label 0 is out of it, and therefore certifies the ambiguous set {0,1}.]
+
+Physical interpretation: the robot certifies "there exists a grasp I can execute safely" or declines, a guarantee about the world located in perception rather than assumed by the controller.
 
 Complexity summary. Training: standard backbone training with an extra light outcome head and a simulator that supplies M offline, so no reinforcement learning loop and no large real-robot dataset. Inference: O(F) for the encoder plus O(K h) for scoring K actions, plus optional O(k h) for k adaptation steps and one extra sensing step only when U is high. No meshing, no reconstruction, no dynamics rollout.
 
