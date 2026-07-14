@@ -101,9 +101,74 @@ def test_outcomes_are_valid_and_informative(world) -> None:
     *_, y = world
     y.validate()
     rate = float(y.succ.mean())
-    assert 0.02 < rate < 0.6, f"success rate {rate:.3f} is degenerate"
+    assert 0.15 < rate < 0.9, f"success rate {rate:.3f} is degenerate"
     assert float(y.succ.squeeze(-1).std(dim=1).mean()) > 0.05, (
         "success barely varies across actions; the outcome is not action-conditional"
+    )
+
+
+def test_the_simulator_executes_the_grasp_that_was_PLANNED(world) -> None:
+    """REGRESSION -- THE WORST BUG IN THIS REPOSITORY, AND IT LOOKED EXACTLY LIKE PHYSICS.
+
+    `sample_actions` emits a grasp point in the WORLD frame (`t_obj + lift`, where t_obj is the
+    object's settled world position). `_rollout` was then adding the object's world position AGAIN::
+
+        hand_pos = rest + action[0:3] - R@TCP   ==   2*t_obj + lift - R@TCP
+
+    so the gripper was displaced by the object's entire world position -- centimetres up, and
+    sideways -- and the simulator executed a different grasp from the one that had been planned and
+    scored. Nothing crashed. Every symptom read as a physical finding:
+
+      * Tall objects were never gripped, and were left standing on the table. Slip is measured
+        against the hand, so an ungrasped object reports slip == lift_height: SIX objects reported a
+        mean slip of 0.1185 m against a lift_height of 0.12 m. Identical "physics" across six
+        different geometries is not physics.
+      * Only the two SHORTEST objects worked at all (ketchup 42%, salad_dressing 26%) -- i.e. the
+        two with the smallest displacement.
+      * The NOMINAL, zero-noise grasp was the WORST of all (5%), because it is deterministically
+        displaced, while sampling noise sometimes cancelled the offset. A proposal whose mode is its
+        worst sample is not a proposal; it is a bug.
+      * And the analytic tier -- which plans correctly in the world frame -- was scoring one grasp
+        while the simulator executed another. That is precisely how a grasp-quality metric measures
+        as "uninformative" (AUC 0.539) when it is nothing of the kind. It would have been written up
+        as the paper's headline result.
+
+    Nominal success went 6.2% -> 99.6% on the fix. The invariant below is the one that could not
+    hold under the bug: aim the jaws exactly where the object is, and the object must come up.
+    """
+    sim, an, oi, x, _, _ = world
+    g = torch.Generator().manual_seed(3)
+    a = an.sample_actions(x, 2, generator=g, spread=0.0)  # the NOMINAL grasp: no noise at all
+    y = sim.query_scenes(oi, x, a)
+
+    rate = float(y.succ.mean())
+    assert rate > 0.9, (
+        f"the nominal grasp -- aimed straight at the settled object, with zero proposal noise -- "
+        f"succeeds only {rate:.1%} of the time. The gripper is not going where it was told. "
+        f"Check the frame convention in LiberoGraspOracle._rollout: the action is a WORLD-frame "
+        f"grasp point and must not have the object's position added to it a second time."
+    )
+    held = y.succ.squeeze(-1) == 1
+    assert float(y.slip.squeeze(-1)[held].mean()) < 0.01, "a nominal grasp should not slip"
+
+
+def test_a_tighter_proposal_produces_better_grasps(world) -> None:
+    """REGRESSION. Sanity that the proposal is a proposal: narrowing it toward the ideal antipodal
+    grasp must IMPROVE the success rate, monotonically. Under the frame bug this ran backwards --
+    spread 1.0 scored 0.094 and spread 0.0 scored 0.050 -- because the noise was partially
+    cancelling a deterministic displacement. That inversion is the signature of an aiming error, and
+    it is the cheapest possible check for one.
+    """
+    sim, an, oi, x, _, _ = world
+    rates = []
+    for spread in (1.0, 0.25, 0.0):
+        g = torch.Generator().manual_seed(11)
+        a = an.sample_actions(x, 3, generator=g, spread=spread)
+        rates.append(float(sim.query_scenes(oi, x, a).succ.mean()))
+
+    assert rates[0] < rates[1] < rates[2], (
+        f"success must rise as the proposal tightens; got {rates}. If it FALLS, the proposal's mode "
+        f"is worse than its samples, which means the grasp is being aimed at the wrong place."
     )
 
 

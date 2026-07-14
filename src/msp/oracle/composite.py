@@ -159,9 +159,15 @@ class CompositeOracle(PhysicsOracle):
         return self.analytic.sample_states(n, generator=generator)
 
     def sample_actions(
-        self, state: Tensor, n_actions: int, generator: torch.Generator | None = None
+        self,
+        state: Tensor,
+        n_actions: int,
+        generator: torch.Generator | None = None,
+        spread: float = 1.0,
     ) -> Tensor:
-        return self.analytic.sample_actions(state, n_actions, generator=generator)
+        return self.analytic.sample_actions(
+            state, n_actions, generator=generator, spread=spread
+        )
 
     def observe(self, state: Tensor, obs_dim: int = 64, noise: float = 0.01) -> Tensor:
         return self.analytic.observe(state, obs_dim=obs_dim, noise=noise)

@@ -12,11 +12,21 @@ from msp.diagnostics.identifiability import (
     row_space,
     subspace_alignment,
 )
+from msp.diagnostics.selective import (
+    RiskCoverage,
+    SelectiveComparison,
+    compare_selective,
+    risk_coverage,
+)
 
 __all__ = [
     "ActiveReport",
     "ProxyComparison",
+    "RiskCoverage",
+    "SelectiveComparison",
     "compare_predictors",
+    "compare_selective",
+    "risk_coverage",
     "roc_auc",
     "IdentifiabilityReport",
     "analyze",

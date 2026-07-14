@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import math
+
 import torch
 from torch import Tensor
 
@@ -163,8 +165,38 @@ def distortion(
     )
 
     def reduce(x: Tensor) -> Tensor:
-        # x: (B, Na, 1) -> scalar
+        # x: (B, Na, 1) or (B, K, Na, 1) NLLs -> scalar.
+        #
+        # THE K AXIS IS REDUCED WITH A LOG-MEAN-EXP, NOT A MEAN, AND THE DIFFERENCE IS THE MODEL.
+        #
+        # The decision rule reads out the MARGINAL probability (Eq 13):
+        #
+        #       s(o, a)  =  E_{z~q(z|o)} [ p(succ | z, a) ]
+        #
+        # so the loss that matches it is the MARGINAL negative log-likelihood, -log E_z[p]. The
+        # obvious alternative, E_z[-log p], is a DIFFERENT objective -- by Jensen it is an upper
+        # bound (it is the ELBO's reconstruction term; -log E_z[p] is IWAE's) -- and here the gap
+        # between them decides whether the model works at all.
+        #
+        # E_z[-log p] asks the head to be right for EVERY draw of z. The posterior is
+        # noise-dominated (measured on LIBERO: |mu| ~ 0.37 against sigma ~ 0.71), so the only way to
+        # be right for every draw is to be ROBUST TO z -- i.e. to ignore its fine structure. But the
+        # object's POSE lives in exactly that fine structure, and whether a grasp holds depends on
+        # the angle between the jaws and the object, an interaction between the action and the pose.
+        # So the head threw the action away and predicted the per-object base rate: prediction std
+        # across a scene's 8 candidate grasps 0.003, against 0.415 in the truth, and a within-scene
+        # AUC of 0.52 -- chance -- while the POOLED AUC read 0.72 by simply recognising the object.
+        #
+        # -log E_z[p] asks only that the head be right on AVERAGE over z, so a good draw can carry a
+        # bad one. That permits the model to USE the pose in z, which is the whole point of the
+        # belief. Nothing else fixed it: not beta (30 -> 300 raises the rate 3.9 -> 11.6 nats, AUC
+        # unmoved), not K (1 -> 8, unmoved), not the head's form (FiLM, unmoved).
+        #
+        # Weights are per (scene, action) and do not depend on z, so they broadcast across K.
         x = x.squeeze(-1)
+        if x.dim() == 3:  # (B, K, Na): x = -log p(y | z_k, a)
+            # -log( (1/K) sum_k p )  =  -logsumexp_k(-x) + log K
+            x = -torch.logsumexp(-x, dim=1) + math.log(x.shape[1])
         if weights is None:
             return x.mean()
         return (x * weights).sum()

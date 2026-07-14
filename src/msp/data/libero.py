@@ -44,6 +44,33 @@ log = logging.getLogger(__name__)
 __all__ = ["LiberoCorpusSpec", "LiberoGraspDataset", "generate_libero_corpus"]
 
 
+#: Source files that DETERMINE THE OUTCOMES in a corpus: the grasp proposal, the analytic score,
+#: the geometry, and the rollout. The cache key hashes their contents, so that fixing the physics
+#: automatically invalidates every corpus generated under the old physics.
+#:
+#: This is not defensive tidiness. The cache key used to be a hash of the SPEC alone (n_scenes,
+#: seed, image size...). A frame-convention bug in `libero_sim._rollout` was adding the object's
+#: world position to the grasp point twice, so the simulator executed a grasp several centimetres
+#: from the one that had been planned and scored; the nominal grasp succeeded 6% of the time. After
+#: the fix it succeeds 99.6%. But the SPEC had not changed -- so every downstream run would have hit
+#: the cache, silently reloaded the corpus generated under the broken physics, and reproduced the old
+#: numbers perfectly. A fixed bug that keeps reporting its old results is worse than an open one.
+_PHYSICS_SOURCES = (
+    "oracle/libero_sim.py",  # the rollout: approach, close, lift, measure
+    "oracle/libero_assets.py",  # the geometry the rollout collides
+    "oracle/analytic.py",  # the grasp proposal AND the Ferrari-Canny score
+)
+
+
+def _physics_fingerprint() -> str:
+    """Hash of the code that decides what a grasp DOES. Any edit invalidates the corpus cache."""
+    root = Path(__file__).resolve().parent.parent  # .../src/msp
+    h = hashlib.sha256()
+    for rel in _PHYSICS_SOURCES:
+        h.update((root / rel).read_bytes())
+    return h.hexdigest()[:12]
+
+
 @dataclass(frozen=True)
 class LiberoCorpusSpec:
     n_scenes: int = 8000
@@ -52,9 +79,11 @@ class LiberoCorpusSpec:
     n_views: int = 8  # |B|, the sensing action space. 1 = passive single camera.
     seed: int = 0
     objects: tuple[str, ...] = ()  # empty = all 13 HOPE groceries
+    spread: float = 1.0  # proposal width. 1.0 = wide (A3/A8 need failures). See sample_actions.
 
     def key(self) -> str:
         raw = "|".join(f"{f}={getattr(self, f)}" for f in sorted(self.__dataclass_fields__))
+        raw += f"|physics={_physics_fingerprint()}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -89,7 +118,7 @@ def generate_libero_corpus(
 
     # The analytic tier plans on the bounding box -- the "reconstruction".
     analytic.set_base_half(sim.base_half(oi))
-    actions = analytic.sample_actions(x, spec.n_actions, generator=g)
+    actions = analytic.sample_actions(x, spec.n_actions, generator=g, spread=spec.spread)
 
     log.info("rendering %d scenes x %d view(s)...", spec.n_scenes, spec.n_views)
     views = [

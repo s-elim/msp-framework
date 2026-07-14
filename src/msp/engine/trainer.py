@@ -109,6 +109,29 @@ class TrainConfig:
     seed: int = 0
     compile: bool = False
 
+    #: Posterior samples used to estimate the distortion  D = E_{z~q(z|o)}[ -log p(y|z,a) ]  at
+    #: TRAINING time. It must be > 1, and here is why.
+    #:
+    #: The distortion is an EXPECTATION over z (Eq 13/14). Estimating it from a SINGLE draw is
+    #: unbiased but the variance is ruinous, because the posterior is noise-dominated: measured on
+    #: LIBERO, |mu| ~ 0.37 while sigma ~ 0.71, so one sample of z is mostly noise.
+    #:
+    #: What that costs is not slower convergence -- it is a DIFFERENT MODEL. Whether a grasp works
+    #: depends on the angle between the jaws and the object, i.e. on an INTERACTION between the
+    #: action and the object's pose in z. Through a single noisy draw the head cannot resolve the
+    #: pose, so it cannot form that interaction, and it converges to the only thing that survives
+    #: the noise: the per-object base success rate. The action is then ignored outright --
+    #: prediction std across the 8 candidate grasps of a scene was 0.0027, against 0.4148 in the
+    #: ground truth. Within-scene AUC 0.524 (chance) while the POOLED AUC read a healthy 0.716,
+    #: because a pooled AUC over objects whose base rates range from 0.04 to 0.999 rewards object
+    #: RECOGNITION. The model looked like it worked and could not rank two grasps.
+    #:
+    #: Raising beta does not fix it (beta=300 lifts the rate 3.9 -> 11.6 nats and within-scene AUC
+    #: stays at 0.524); the information is already in the latent. Fitting a head to the FROZEN
+    #: encoder's mean recovers within-scene AUC 0.615 against an oracle ceiling of 0.685, which is
+    #: what proves the encoder was never the problem.
+    train_samples: int = 8
+
 
 class Trainer:
     def __init__(
@@ -185,14 +208,15 @@ class Trainer:
         # --- network: reduced precision is fine here ---
         with torch.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
             belief = self.encoder(obs)
-            z = belief.rsample(1).squeeze(1)  # one sample per scene, as Alg 1 prescribes
-            pred = self.head(z, actions)
+            k = self.cfg.train_samples
+            z = belief.rsample(k)  # (B, K, d) -- K > 1; see TrainConfig.train_samples
+            pred = self.head(z, actions)  # (B, K, Na, 6)
 
         # --- loss: fp32, always. These numbers get PLOTTED. ---
         with torch.autocast("cuda", enabled=False):
             return vib_objective(
                 pred.float(),
-                y,
+                y.expand_to(k),
                 belief.mu.float(),
                 belief.logvar.float(),
                 self.cfg.beta,

@@ -362,9 +362,40 @@ class LiberoGraspOracle(PhysicsOracle):
         rest = d.qpos[oa : oa + 3].copy()
 
         # Place the gripper so its TOOL CENTRE POINT lands on the grasp point.
+        #
+        # THE ACTION IS A GRASP POINT IN THE WORLD FRAME, NOT AN OFFSET FROM THE OBJECT.
+        #
+        # `sample_actions` builds it as `t_obj + lift`, where t_obj = x[0:3] is the object's SETTLED
+        # WORLD position (`sample_scenes` writes the settled pose straight into the state). Adding
+        # `rest` -- which is that same world position, re-read after a brief re-settle -- counts the
+        # object's position TWICE:
+        #
+        #     hand_pos = rest + (t_obj + lift) - R@TCP  =  2*t_obj + lift - R@TCP
+        #
+        # The gripper was therefore displaced by the object's entire world position: several cm up
+        # in z, and sideways in x/y. What that produced looked exactly like physics, which is why it
+        # survived:
+        #
+        #   * The taller the object, the larger the z error, so the jaws closed on empty air and the
+        #     object was left standing on the table. Slip is measured against the hand, so an
+        #     ungrasped object reports slip == lift_height -- and SIX objects reported a mean slip of
+        #     0.1185 m against a lift_height of 0.12. Identical "physics" across six different
+        #     geometries is not physics.
+        #   * Only ketchup and salad_dressing worked (42%, 26%) -- the two SHORTEST objects, i.e. the
+        #     smallest error.
+        #   * The NOMINAL grasp (zero proposal noise) was the WORST of all, 5%: it is deterministically
+        #     displaced, whereas sampling noise sometimes cancels the offset. A proposal whose mode is
+        #     its worst sample is not a proposal, it is a bug.
+        #   * And because the analytic tier plans correctly in the world frame, it was scoring one
+        #     grasp while the simulator executed another -- which is precisely how one measures a
+        #     grasp-quality metric to be "uninformative" (AUC 0.539) when it is nothing of the kind.
+        #
+        # The object may drift a hair during the 60-step re-settle above, so the grasp follows it by
+        # (rest - x[0:3]); that term is ~0 for an already-settled object and is NOT a second offset.
         gq = action[3:7] / (np.linalg.norm(action[3:7]) + 1e-9)
         R = _quat_to_matrix(torch.tensor(gq, dtype=torch.float32).view(1, 4))[0].numpy()
-        hand_pos = rest + np.asarray(action[0:3], dtype=float) - R @ TCP_OFFSET
+        drift = rest - np.asarray(x[0:3], dtype=float)
+        hand_pos = np.asarray(action[0:3], dtype=float) + drift - R @ TCP_OFFSET
         d.qpos[ha : ha + 3] = hand_pos
         d.qpos[ha + 3 : ha + 7] = gq
         d.mocap_pos[0] = hand_pos

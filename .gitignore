@@ -17,3 +17,8 @@ wandb/
 .ruff_cache/
 data/corpus/
 *.pt
+
+# Third-party baselines are CLONED, never vendored. AnyDexGrasp is CC BY-NC 4.0; committing it
+# here would pull a non-commercial licence into a repo we intend to publish. `baselines/fetch.sh`
+# pins the exact commit instead.
+baselines/*/

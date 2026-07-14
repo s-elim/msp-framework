@@ -208,9 +208,38 @@ class OutcomeHead(nn.Module):
         self.action_dim = action_dim
         self.gripper_dim = gripper_dim
 
-        in_dim = latent_dim + action_dim + gripper_dim
+        # THE ACTION MUST INTERACT MULTIPLICATIVELY WITH THE BELIEF, AND A CONCAT-MLP WILL NOT DO IT.
+        #
+        # Whether a grasp holds depends on the ANGLE BETWEEN THE JAWS AND THE OBJECT -- a product of
+        # something in `a` (the grasp's orientation) and something in `z` (the object's pose). The
+        # head used to be a 2x256 MLP on cat[z, a] and had to discover that interaction from scratch.
+        # It did not. It converged instead to the one signal available without any interaction at
+        # all -- the per-object base success rate -- and IGNORED THE ACTION OUTRIGHT: across the 8
+        # candidate grasps of a scene its prediction had std 0.0027, against 0.4148 in the truth.
+        # Within-scene AUC was 0.524, i.e. chance: it could not say which of an object's own grasps
+        # would work.
+        #
+        # It looked healthy anyway, because the POOLED AUC read 0.716. On a corpus whose per-object
+        # base rates run from 0.043 (macaroni) to 0.999 (bbq_sauce), a pooled AUC rewards a model
+        # that merely RECOGNISES THE OBJECT. The pooled score even exceeded both strata it was
+        # computed from (0.691 box / 0.400 curved) -- Simpson's paradox, and the tell.
+        #
+        # Neither more information nor a better estimator rescued it: raising beta lifted the rate
+        # from 3.9 to 11.6 nats (within-scene AUC still 0.524), and estimating the distortion with
+        # K=8 posterior samples instead of 1 changed nothing (0.528). Fitting a WIDER, DEEPER head to
+        # the same frozen encoder reached 0.615 against an oracle ceiling of 0.685 -- which localised
+        # the fault to the head's form, not to the belief.
+        #
+        # So the interaction is now built in. FiLM: `z` emits a per-feature scale and shift that
+        # modulate the action embedding. The product is structural, not something to be learned.
+        self.act_embed = nn.Sequential(nn.Linear(action_dim, hidden), nn.GELU())
+        self.film = nn.Linear(latent_dim + gripper_dim, 2 * hidden)
+
+        in_dim = hidden + latent_dim + gripper_dim
         self.trunk = nn.Sequential(
             nn.Linear(in_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
             nn.GELU(),
             nn.Linear(hidden, hidden),
             nn.GELU(),
@@ -245,18 +274,24 @@ class OutcomeHead(nn.Module):
             raise ValueError(f"action dim {ad} != head's {self.action_dim}")
 
         # Explicit K x Na outer product. No implicit broadcast that can silently diagonalize.
-        z_e = z.unsqueeze(2).expand(b, k, na, d)
-        a_e = actions.unsqueeze(1).expand(b, k, na, ad)
-        parts = [z_e, a_e]
-
+        z_e = z.unsqueeze(2).expand(b, k, na, d)  # (B, K, Na, d)
+        cond = [z_e]
         if self.gripper_dim > 0:
             if gripper is None:
                 raise ValueError("head was built with gripper_dim > 0 but gripper=None")
-            parts.append(gripper.view(b, 1, 1, self.gripper_dim).expand(b, k, na, -1))
+            cond.append(gripper.view(b, 1, 1, self.gripper_dim).expand(b, k, na, -1))
         elif gripper is not None:
             raise ValueError("gripper supplied but head was built with gripper_dim = 0")
+        c = torch.cat(cond, dim=-1)  # (B, K, Na, d + Gd)
 
-        p = self.out(self.trunk(torch.cat(parts, dim=-1)))  # (B, K, Na, 6)
+        # FiLM: the belief modulates the action embedding, so a * z enters the network as a PRODUCT.
+        # `1 + gamma` keeps the map near identity at init, so the action is attended to from step 0
+        # rather than having to fight its way in.
+        a_e = self.act_embed(actions).unsqueeze(1).expand(b, k, na, -1)  # (B, K, Na, H)
+        gamma, shift = self.film(c).chunk(2, dim=-1)
+        h = torch.nn.functional.gelu(a_e * (1.0 + gamma) + shift)
+
+        p = self.out(self.trunk(torch.cat([h, c], dim=-1)))  # (B, K, Na, 6)
         if squeeze_k:
             p = p.squeeze(1)  # (B, Na, 6)
 

@@ -508,13 +508,35 @@ class AnalyticGraspOracle(PhysicsOracle):
         return x.to(self.device)
 
     def sample_actions(
-        self, state: Tensor, n_actions: int, generator: torch.Generator | None = None
+        self,
+        state: Tensor,
+        n_actions: int,
+        generator: torch.Generator | None = None,
+        spread: float = 1.0,
     ) -> Tensor:
         """rho: grasp poses aimed near the object, with random approach orientations.
 
         Full support on the admissible set (Assumption A3), but concentrated where grasps are
         plausible -- a uniform prior over SE(3) would put essentially all its mass on grasps
         that miss the object entirely and carry no information.
+
+        THE TRAINING PROPOSAL AND THE DEPLOYMENT PROPOSAL ARE NOT THE SAME DISTRIBUTION, and
+        conflating them makes the conformal certificate vacuous.
+
+        `spread` scales how far a proposal may stray from the ideal antipodal grasp.
+
+        * spread = 1.0 (default, and what the CORPUS must use). Wide. About 10% of grasps succeed.
+          Assumptions A3/A8 require this: a corpus of only good grasps carries no information about
+          what makes a grasp fail, and the outcome head would have no negatives to learn from.
+        * spread << 1. Tight. The candidate set a DEPLOYED system would actually rank.
+
+        Why this knob has to exist. Under the wide proposal the best grasp out of 16000 succeeds
+        about 52% of the time, and s -- which is calibrated, and says 0.46 for exactly those grasps
+        -- never crosses 0.5. Eq 24 certifies only when s > max(q_hat, 1-q_hat) >= 0.5, so NOTHING is
+        ever certified and the scene-level abstention rate is 1.000 at every alpha. That is not a
+        broken certificate; it is an honest one being asked to certify a coin flip. A deployed
+        system does not rank 16000 random grasps, it ranks good candidates, and with a tighter
+        proposal the certificate has something it can actually certify.
         """
         b = state.shape[0]
         dev = state.device
@@ -554,11 +576,17 @@ class AnalyticGraspOracle(PhysicsOracle):
         score = 4.0 * verticality + width  # (B, 3)
         order = score.argsort(dim=-1)  # ascending: order[:, 0] is the best closing axis
 
-        pick = torch.randint(0, 2, (b, n_actions), generator=generator, device=dev)
+        # Which closing axis. At full spread, either of the two best; as spread -> 0, always the
+        # best one. The second-best axis is a legitimate grasp on a cube and a poor one on a carton,
+        # so a tight proposal should stop gambling on it.
+        take_second = torch.rand(b, n_actions, generator=generator, device=dev) < 0.5 * spread
+        pick = take_second.long()
         axis_id = torch.gather(order, 1, pick)  # one of the two best axes
         axes = torch.eye(3, device=dev)[axis_id]  # (B, Na, 3), object frame
         axes = torch.einsum("bij,bnj->bni", R_obj, axes)  # -> world frame
-        axes = axes + 0.12 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
+        axes = axes + spread * 0.12 * torch.randn(
+            b, n_actions, 3, generator=generator, device=dev
+        )
         # Project the closing axis onto the horizontal plane: whatever the object's axes are, the
         # jaws of a top-down gripper close horizontally.
         axes[..., 2] = axes[..., 2] * 0.15
@@ -615,7 +643,7 @@ class AnalyticGraspOracle(PhysicsOracle):
         pos = (
             t_obj.unsqueeze(1)
             + lift
-            + 0.006 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
+            + spread * 0.006 * torch.randn(b, n_actions, 3, generator=generator, device=dev)
         )
         return torch.cat([pos, q], dim=-1)
 
