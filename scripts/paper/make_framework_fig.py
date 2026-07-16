@@ -184,6 +184,7 @@ def render_matplotlib(out_dir: Path, views_dir: Path) -> None:
     x, y, w, h = OBS
     _box(ax, OBS, C_OBS_FC, C_OBS_EC)
     T(x + w / 2, y + h - 2.2, "Observation", FS_TITLE, w="bold")
+    T(x + w / 2, y + h - 4.3, "networked RGB-D cameras", FS_TINY, c=FAINT)
     thumbs = _thumb_paths(views_dir)
     if thumbs:
         for j, (tx, ty) in enumerate(THUMBS):
@@ -228,6 +229,7 @@ def render_matplotlib(out_dir: Path, views_dir: Path) -> None:
                              alpha=al, zorder=4))
     T(bx, by + 2.7, "belief", FS_TINY, c=C_A_HD)
     T(bx, FLOW_Y - 1.7, r"$z_k\sim q_\theta$", FS_TINY)
+    T(bx, FLOW_Y - 3.7, r"$z\in\mathbb{R}^{64}$", FS_TINY, c=FAINT)
 
     # ---------------------------------------------------------------- module B
     x, y, w, h = MOD_B
@@ -306,7 +308,8 @@ def render_matplotlib(out_dir: Path, views_dir: Path) -> None:
     rowT("adapt", 1.6, r"adapt: after probe $(a_p,y_p)$  (Eq. 19-21)", w_="bold", c=C_INF_HD)
     rowT("adapt", 4.3, r"$q'(z)\propto q_\theta(z|o)\, p_\psi(y_p|z,a_p)$")
 
-    T(x + w / 2, y + 4.4, "no retraining at deployment", FS_TINY, c=C_INF_HD)
+    T(x + w / 2, y + 5.4, r"every decision reads the code $z$ alone;", FS_TINY, c=C_INF_HD)
+    T(x + w / 2, y + 3.4, "nothing retrains at deployment", FS_TINY, c=C_INF_HD)
 
     # ---------------------------------------------------------------- theory footer
     x, y, w, h = THEORY
@@ -517,6 +520,7 @@ def render_pptx(out_dir: Path, png_path: Path, views_dir: Path) -> None:
     x, y, w, h = OBS
     s = _rect(OBS, C_OBS_FC, C_OBS_EC)
     _para(s.text_frame, "Observation", PT_TITLE, bold=True, first=True)
+    _para(s.text_frame, "networked RGB-D cameras", PT_TINY, color=FAINT)
     thumbs = _thumb_paths(views_dir)
     if thumbs:
         for j, (tx, ty) in enumerate(THUMBS):
@@ -561,6 +565,7 @@ def render_pptx(out_dir: Path, png_path: Path, views_dir: Path) -> None:
         _rect((bx - rw_ / 2, by - rh_ / 2, rw_, rh_), fc_, C_A_EC, line_w=1.0, oval=True)
     _label(bx, by + 2.7, "belief", PT_TINY, color=C_A_HD)
     _label(bx, FLOW_Y - 1.7, [("z", 0), ("k", -1), (" ~ q", 0), ("θ", -1)], PT_TINY)
+    _label(bx, FLOW_Y - 3.7, [("z ∈ R", 0), ("64", 1)], PT_TINY, color=FAINT)
 
     # ---------------------------------------------------------------- module B
     x, y, w, h = MOD_B
@@ -647,7 +652,9 @@ def render_pptx(out_dir: Path, png_path: Path, views_dir: Path) -> None:
         for i, (parts, bold, color) in enumerate(row_text[name]):
             _para(rtf, parts, PT_TINY, bold=bold, color=color, before=0 if i == 0 else 2,
                   first=(i == 0))
-    _label(x + w / 2, y + 4.4, "no retraining at deployment", PT_TINY, color=C_INF_HD)
+    _label(x + w / 2, y + 5.4, "every decision reads the code z alone;", PT_TINY,
+           color=C_INF_HD)
+    _label(x + w / 2, y + 3.4, "nothing retrains at deployment", PT_TINY, color=C_INF_HD)
 
     # ---------------------------------------------------------------- theory footer
     x, y, w, h = THEORY
