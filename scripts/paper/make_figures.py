@@ -86,10 +86,24 @@ def fig_frontier(results: Path, out: Path) -> None:
     beta = np.array([r["beta"] for r in rows])
 
     fig, ax = plt.subplots(figsize=(COL, 2.4))
-    ax.plot(rate, dist, "-o", color=ACCENT, zorder=3)
-    for r, d, b in zip(rate, dist, beta):
-        ax.annotate(f"$\\beta$={b:g}", (r, d), textcoords="offset points",
-                    xytext=(4, 4), fontsize=6, color=INK, alpha=0.8)
+    # Under the sufficiency-for-success budget the UNWEIGHTED total sum_j D_j is dominated
+    # by the margin/slip likelihoods the budget deliberately sacrifices, so it can RISE with
+    # beta. The frontier that evidences minimality-for-success is D_succ vs rate; when the
+    # per-dimension numbers are present (eval_l5_perdim.py) they are the primary curve.
+    if all("distortion_succ" in r for r in rows):
+        dsucc = np.array([r["distortion_succ"] for r in rows])
+        ax.plot(rate, dist, "--s", color="#9AA1AB", lw=1.0, ms=3, zorder=2,
+                label="total $\\sum_j D_j$")
+        ax.plot(rate, dsucc, "-o", color=ACCENT, zorder=3, label="$D_{succ}$ (certified outcome)")
+        for r, d, b in zip(rate, dsucc, beta):
+            ax.annotate(f"$\\beta$={b:g}", (r, d), textcoords="offset points",
+                        xytext=(4, 4), fontsize=6, color=INK, alpha=0.8)
+        ax.legend(loc="center right", fontsize=6)
+    else:
+        ax.plot(rate, dist, "-o", color=ACCENT, zorder=3)
+        for r, d, b in zip(rate, dist, beta):
+            ax.annotate(f"$\\beta$={b:g}", (r, d), textcoords="offset points",
+                        xytext=(4, 4), fontsize=6, color=INK, alpha=0.8)
 
     ax.set_xlabel("Rate  $R = \\mathbb{E}_o\\,\\mathrm{KL}(q_\\theta(z|o)\\,\\|\\,r(z))$   [nats]")
     ax.set_ylabel("Outcome distortion  $D$   [nats]")

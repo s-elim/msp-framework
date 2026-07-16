@@ -166,20 +166,34 @@ def table_frontier(results: Path, out: Path) -> None:
     if not rows:
         return
     rows = sorted(rows, key=lambda r: r["beta"])
-    body = "\n".join(
-        rf"{r['beta']:g} & {r['rate']:.3f} & {r['distortion']:.4f} & {r['coverage']:.3f} \\"
-        for r in rows
-    )
+    if all("distortion_succ" in r for r in rows):
+        # D_succ (from eval_l5_perdim.py) is the outcome the decision rule reads; the
+        # unweighted total is kept so the reader sees what the budget sacrificed.
+        body = "\n".join(
+            rf"{r['beta']:g} & {r['rate']:.3f} & \textbf{{{r['distortion_succ']:.4f}}}"
+            rf" & {r['distortion']:.4f} & {r['coverage']:.3f} \\"
+            for r in rows
+        )
+        cols, head_row = "rrrrr", r"$\beta$ & Rate $R$ & $D_{succ}$ & $\sum_j D_j$ & Coverage \\"
+    else:
+        body = "\n".join(
+            rf"{r['beta']:g} & {r['rate']:.3f} & {r['distortion']:.4f} & {r['coverage']:.3f} \\"
+            for r in rows
+        )
+        cols, head_row = "rrrr", r"$\beta$ & Rate $R$ & Distortion $D$ & Coverage \\"
     tex = HEADER.format(src=src) + rf"""
 \begin{{table}}[t]
 \centering
 \caption{{Rate--distortion frontier over the sufficiency budget $\beta$. $\beta$ multiplies
 the relevance term (Eq.~7), so larger $\beta$ purchases sufficiency at the price of rate,
-and $\beta\to\infty$ recovers sufficiency (Theorem~\ref{{thm:ib}}).}}
+and $\beta\to\infty$ recovers sufficiency (Theorem~\ref{{thm:ib}}). Under the
+sufficiency-for-success budget the purchased outcome is $succ$: $D_{{succ}}$ falls as the
+rate rises, while the unweighted total, dominated by the deliberately sacrificed
+margin/slip likelihoods, need not.}}
 \label{{tab:frontier}}
-\begin{{tabular}}{{rrrr}}
+\begin{{tabular}}{{{cols}}}
 \toprule
-$\beta$ & Rate $R$ & Distortion $D$ & Coverage \\
+{head_row}
 \midrule
 {body}
 \bottomrule
