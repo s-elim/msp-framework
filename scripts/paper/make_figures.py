@@ -61,12 +61,23 @@ def _load(results: Path, name: str):
     return json.loads(p.read_text())
 
 
+def _load_any(results: Path, *names: str):
+    """First existing file wins. The LIBERO results (l*) supersede the synthetic-world
+    ones (e*): same evaluator, same schema, real objects."""
+    for n in names:
+        p = results / n
+        if p.exists():
+            return json.loads(p.read_text())
+    log.warning("SKIP %s (not found)", " or ".join(names))
+    return None
+
+
 # ======================================================================================
 
 
 def fig_frontier(results: Path, out: Path) -> None:
     """Figure: the rate-distortion frontier. The minimality evidence (V2 Ch.6)."""
-    rows = _load(results, "e1_frontier.json")
+    rows = _load_any(results, "l5_frontier.json", "e1_frontier.json")
     if not rows:
         return
     rows = sorted(rows, key=lambda r: r["beta"])
@@ -149,7 +160,7 @@ def fig_identifiability(results: Path, out: Path) -> None:
 
 def fig_coverage(results: Path, out: Path) -> None:
     """Figure: contribution C4. Empirical coverage vs the nominal 1 - alpha (Theorem 7)."""
-    rows = _load(results, "e3_coverage.json")
+    rows = _load_any(results, "l2_coverage.json", "e3_coverage.json")
     if not rows:
         return
     rows = sorted(rows, key=lambda r: r["alpha"])

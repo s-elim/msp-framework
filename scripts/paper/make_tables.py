@@ -32,14 +32,25 @@ def _load(results: Path, name: str):
     return json.loads(p.read_text())
 
 
+def _load_any(results: Path, *names: str):
+    """First existing file wins. The LIBERO results (l*) supersede the synthetic-world
+    ones (e*): same evaluator, same schema, real objects."""
+    for n in names:
+        p = results / n
+        if p.exists():
+            return json.loads(p.read_text()), n
+    log.warning("SKIP %s (not found)", " or ".join(names))
+    return None, names[0]
+
+
 def table_main(results: Path, out: Path) -> None:
     """Table 1: the headline result at the operating point."""
-    rows = _load(results, "e3_coverage.json")
+    rows, src = _load_any(results, "l2_coverage.json", "e3_coverage.json")
     if not rows:
         return
     r = min(rows, key=lambda x: abs(x["alpha"] - 0.1))  # the alpha = 0.1 operating point
 
-    tex = HEADER.format(src="e3_coverage.json") + rf"""
+    tex = HEADER.format(src=src) + rf"""
 \begin{{table}}[t]
 \centering
 \caption{{Calibrated abstention at the $\alpha=0.1$ operating point. Coverage is the
@@ -151,7 +162,7 @@ Always act (no certificate) & {abst['no_abstention_success']:.3f} & {abst['n_epi
 
 
 def table_frontier(results: Path, out: Path) -> None:
-    rows = _load(results, "e1_frontier.json")
+    rows, src = _load_any(results, "l5_frontier.json", "e1_frontier.json")
     if not rows:
         return
     rows = sorted(rows, key=lambda r: r["beta"])
@@ -159,7 +170,7 @@ def table_frontier(results: Path, out: Path) -> None:
         rf"{r['beta']:g} & {r['rate']:.3f} & {r['distortion']:.4f} & {r['coverage']:.3f} \\"
         for r in rows
     )
-    tex = HEADER.format(src="e1_frontier.json") + rf"""
+    tex = HEADER.format(src=src) + rf"""
 \begin{{table}}[t]
 \centering
 \caption{{Rate--distortion frontier over the sufficiency budget $\beta$. $\beta$ multiplies
@@ -182,10 +193,10 @@ $\beta$ & Rate $R$ & Distortion $D$ & Coverage \\
 def table_active(results: Path, out: Path) -> None:
     """Table: contribution C3, reported honestly. The 'oracle best' row is included ON PURPOSE and
     labelled as invalid, so a reader can see exactly how large the winner's curse was."""
-    r = _load(results, "e6_active.json")
+    r, src = _load_any(results, "l4_active.json", "e6_active.json")
     if not r:
         return
-    tex = HEADER.format(src="e6_active.json") + rf"""
+    tex = HEADER.format(src=src) + rf"""
 \begin{{table}}[t]
 \centering
 \caption{{Active perception (Section~\ref{{sec:active}}). Ambiguity reduction is the fractional drop
