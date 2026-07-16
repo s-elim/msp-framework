@@ -87,7 +87,7 @@ are exactly the ones that manipulation cannot distinguish.}}
 \toprule
 & Ground truth & Estimated \\
 \midrule
-State dimension $d_X$          & {r['state_dim']}      & --- \\
+State dimension $d_X$          & {r['state_dim']}      & -- \\
 $\mathrm{{rank}}\,J(x)$          & {r['true_rank']}      & {r['estimated_rank_mean']:.2f} \\
 $\dim \ker J(x)$               & {r['true_null_dim']}  & {r['estimated_null_dim_mean']:.2f} \\
 \midrule
@@ -130,7 +130,7 @@ Variant & Distortion $D$ & Coverage \\
 \midrule
 Full model            & \textbf{{{full['distortion']:.4f}}} & {full['coverage']:.3f} \\
 $z$-ablated           & {zab['distortion']:.4f} & {zab['coverage']:.3f} \\
-\quad $\Delta$        & \textbf{{$+{delta:.4f}$}} & --- \\
+\quad $\Delta$        & \textbf{{$+{delta:.4f}$}} & -- \\
 \bottomrule
 \end{{tabular}}
 
@@ -221,7 +221,7 @@ def table_identifiability_per_object(results: Path, out: Path) -> None:
     rows = r["per_object"]
     body = "\n".join(
         rf"\texttt{{{x['object'].replace('_', chr(92)+'_')}}} & {x['rank']} & {x['null_dim']} & "
-        + (rf"{x['max_angle_deg']:.2f} \\" if x["max_angle_deg"] is not None else r"--- \\")
+        + (rf"{x['max_angle_deg']:.2f} \\" if x["max_angle_deg"] is not None else r"-- \\")
         for x in rows
     )
     vac = sum(1 for x in rows if x["null_dim"] == 0)
@@ -335,7 +335,7 @@ def table_selective(results: Path, out: Path) -> None:
 \caption{{Deployment. The system ranks a scene's candidate grasps, executes its favourite, and acts
 only when confident enough; the threshold sweeps the \emph{{act rate}}. Reported is the fraction of
 \emph{{executed}} grasps that lifted the object. A useful score rises as it grows more selective. The
-analytic proxy's does not -- at a 10\% act rate it is \emph{{worse}} than picking a grasp at random
+analytic proxy's does not -- at a 25\% act rate it is \emph{{worse}} than picking a grasp at random
 ({r['selective/random_top1']:.3f}), meaning the grasps it is most confident about are the ones that
 fail.}}
 \label{{tab:selective}}

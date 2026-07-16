@@ -26,6 +26,10 @@ log = logging.getLogger("figures")
 # Single-column IEEE width is 3.5in; double is 7.16in.
 COL, DCOL = 3.5, 7.16
 plt.rcParams.update({
+    # One serif family everywhere, matching fig_framework and the IEEE body font.
+    "font.family": "STIXGeneral",
+    "mathtext.fontset": "stix",
+    "savefig.dpi": 400,
     "font.size": 8,
     "axes.labelsize": 8,
     "axes.titlesize": 8,
@@ -285,7 +289,11 @@ def fig_geometry_split(results: Path, out: Path) -> None:
     ax.bar(x - w / 2, an, w, label="Ferrari-Canny", color=WARN, zorder=3)
     ax.bar(x + w / 2, ms, w, label="MSP", color=ACCENT, zorder=3)
     for xi, v in zip(x - w / 2, an):
-        ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5, zorder=4)
+        if abs(v - CHANCE) < 0.045:  # the label would sit on the chance line: put it in the bar
+            ax.text(xi, v - 0.014, f"{v:.3f}", ha="center", va="top", fontsize=6.5,
+                    color="white", zorder=4)
+        else:
+            ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5, zorder=4)
     for xi, v in zip(x + w / 2, ms):
         ax.text(xi, v + 0.008, f"{v:.3f}", ha="center", fontsize=6.5, zorder=4)
 
@@ -336,7 +344,7 @@ def fig_risk_coverage(results: Path, out: Path) -> None:
     ax.set_ylabel("grasps that lifted the object")
     ax.set_xlim(0.05, 1.0)
     ax.set_ylim(0.35, 1.02)
-    ax.legend(loc="lower left")
+    ax.legend(loc="lower right")  # lower left sits on the curve's most damning region
     ax.set_title("When it commits, does the object come up?")
     fig.savefig(out / "fig_risk_coverage.pdf")
     fig.savefig(out / "fig_risk_coverage.png")
