@@ -22,3 +22,6 @@ data/corpus/
 # here would pull a non-commercial licence into a repo we intend to publish. `baselines/fetch.sh`
 # pins the exact commit instead.
 baselines/*/
+
+# Slurm/build logs from baseline setup
+baselines/*.log
