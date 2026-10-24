@@ -1,6 +1,6 @@
 # Reference verification (2026-10-24)
 
-Bibliography: `refs_new.bib`. Problems: 1.
+Bibliography: `refs.bib`. Problems: 0.
 
 | key | source | registered title | year | match |
 |---|---|---|---|---|
@@ -24,7 +24,7 @@ Bibliography: `refs_new.bib`. Problems: 1.
 | ferrari1992 | doi:10.1109/ROBOT.1992.219918 | Planning optimal grasps | None | ok |
 | tishby2000ib | arXiv:physics/0004057 | The information bottleneck method | 2000 | ok |
 | alemi2017vib | arXiv:1612.00410 | Deep Variational Information Bottleneck | 2016 | ok |
-| pacelli2020 | doi:10.15607/RSS.2020.XVI.020 | Event-Driven Visual-Tactile Sensing and Learning for Robots | 2020 | MISMATCH |
+| pacelli2020 | doi:10.15607/RSS.2020.XVI.101 | Learning Task-Driven Control Policies via Information Bottlenecks | 2020 | ok |
 | shao2022taskcomm | doi:10.1109/JSAC.2021.3126087 | Learning Task-Oriented Communication for Edge Inference: An Information Bottleneck Approach | 2022 | ok |
 | kehoe2015cloud | doi:10.1109/TASE.2014.2376492 | A Survey of Research on Cloud Robotics and Automation | 2015 | ok |
 | matsubara2022split | doi:10.1145/3527155 | Split Computing and Early Exiting for Deep Learning Applications: Survey and Research Challenges | 2022 | ok |
@@ -42,3 +42,13 @@ Bibliography: `refs_new.bib`. Problems: 1.
 | loshchilov2019adamw | arXiv:1711.05101 | Decoupled Weight Decay Regularization | 2017 | ok |
 | deng2009imagenet | doi:10.1109/CVPR.2009.5206848 | ImageNet: A large-scale hierarchical image database | 2009 | ok |
 | sarowar2026c3g | doi:10.1109/ACCESS.2026.3666439 | C3G-VM6D: Data-Efficient C3G Vision Model Aided 6D Pose Estimation Based on RGB-D Data | 2026 | ok |
+| hinton2015distill | arXiv:1503.02531 | Distilling the Knowledge in a Neural Network | 2015 | ok |
+| nasiriany2024pivot | arXiv:2402.07872 | PIVOT: Iterative Visual Prompting Elicits Actionable Knowledge for VLMs | 2024 | ok |
+| gemini2025robotics | arXiv:2503.20020 | Gemini Robotics: Bringing AI into the Physical World | 2025 | ok |
+| liu2024moka | arXiv:2403.03174 | MOKA: Open-World Robotic Manipulation through Mark-Based Visual Prompting | 2024 | ok |
+| tang2023graspgpt | arXiv:2307.13204 | GraspGPT: Leveraging Semantic Knowledge from a Large Language Model for Task-Oriented Grasping | 2023 | ok |
+| qian2024thinkgrasp | arXiv:2407.11298 | ThinkGrasp: A Vision-Language System for Strategic Part Grasping in Clutter | 2024 | ok |
+| huang2023voxposer | arXiv:2307.05973 | VoxPoser: Composable 3D Value Maps for Robotic Manipulation with Language Models | 2023 | ok |
+| shen2023f3rm | arXiv:2308.07931 | Distilled Feature Fields Enable Few-Shot Language-Guided Manipulation | 2023 | ok |
+| malinin2020endd | arXiv:1905.00076 | Ensemble Distribution Distillation | 2019 | ok |
+| yang2023som | arXiv:2310.11441 | Set-of-Mark Prompting Unleashes Extraordinary Visual Grounding in GPT-4V | 2023 | ok |
