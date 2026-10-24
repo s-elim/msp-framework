@@ -1,0 +1,4 @@
+--method msp --seed 99 --epochs 7 --tag smoke_msp
+--method direct --seed 99 --epochs 7 --tag smoke_direct
+--method gqcnn --seed 99 --epochs 7 --tag smoke_gqcnn
+--method pose --seed 99 --epochs 7 --tag smoke_pose

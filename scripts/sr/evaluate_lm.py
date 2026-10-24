@@ -207,8 +207,10 @@ def main() -> None:
     res["corpus"]["test"]["random_top1"] = float(y["test"].mean())
 
     for d in sorted(Path(a.runs).glob("*/scores.pt")):
-        r = torch.load(d, map_location="cpu", weights_only=False)
         name = d.parent.name
+        if name.startswith("smoke"):
+            continue
+        r = torch.load(d, map_location="cpu", weights_only=False)
         sc = r["scores"]
         held = r["args"].get("holdout", "")
         yt, yc = y["test"], y["calib"]

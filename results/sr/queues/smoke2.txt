@@ -1,0 +1,1 @@
+--method gqcnn --seed 99 --epochs 2 --tag smoke_gqcnn

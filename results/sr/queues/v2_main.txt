@@ -1,0 +1,26 @@
+--method msp --beta 300 --latent 32 --seed 0
+--method direct --seed 0
+--method gqcnn --seed 0
+--method pose --seed 0
+--method msp --beta 300 --latent 32 --seed 1
+--method direct --seed 1
+--method gqcnn --seed 1
+--method pose --seed 1
+--method msp --beta 300 --latent 32 --seed 2
+--method direct --seed 2
+--method gqcnn --seed 2
+--method pose --seed 2
+--method msp --beta 300 --latent 32 --seed 3
+--method direct --seed 3
+--method gqcnn --seed 3
+--method pose --seed 3
+--method msp --beta 300 --latent 32 --seed 4
+--method direct --seed 4
+--method gqcnn --seed 4
+--method pose --seed 4
+--method msp --beta 300 --latent 8 --seed 0
+--method msp --beta 300 --latent 8 --seed 1
+--method msp --beta 300 --latent 8 --seed 2
+--method msp --beta 300 --latent 64 --seed 0
+--method msp --beta 300 --latent 64 --seed 1
+--method msp --beta 300 --latent 64 --seed 2

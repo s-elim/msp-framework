@@ -124,19 +124,21 @@ def fig2_corpus() -> None:
         picks.append(int(rng.choice(mixed)))
     fig = plt.figure(figsize=(180 * MM, 82 * MM))
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.95], wspace=0.32)
-    gl = gs[0].subgridspec(2, 2, wspace=0.05, hspace=0.18)
+    gl = gs[0].subgridspec(2, 2, wspace=0.05, hspace=0.14)
     for k, i in enumerate(picks):
         ax = fig.add_subplot(gl[k // 2, k % 2])
         draw_scene(ax, b, i)
         n_s, n_e = int(b["succ"][i].sum()), int(b["exec"][i].sum())
-        ax.set_title(f"{NAMES[int(b['obj_id'][i])]}: {n_s} lifted, {n_e - n_s} dropped, "
-                     f"{16 - n_e} blocked", fontsize=6.3, pad=2)
+        ax.set_title(NAMES[int(b["obj_id"][i])], fontsize=7, pad=2)
+        ax.text(0.03, 0.03, f"lifted {n_s}, dropped {n_e - n_s}, blocked {16 - n_e}",
+                transform=ax.transAxes, fontsize=5.6, va="bottom",
+                bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.85})
         if k == 0:
             ax.text(-0.06, 1.12, "a", transform=ax.transAxes, fontsize=9, fontweight="bold")
     h = [plt.Line2D([], [], color=C_SUCC, lw=1.2, label="lifted"),
          plt.Line2D([], [], color=C_FAIL, lw=1.2, label="dropped"),
          plt.Line2D([], [], ls="none", marker="o", ms=3, mfc="white", mec=OK["grey"],
-                    label="not executable")]
+                    label="blocked (open jaws in contact)")]
     fig.legend(handles=h, loc="lower left", bbox_to_anchor=(0.06, -0.035), ncol=3,
                frameon=False, title="simulated outcome of each candidate grasp",
                title_fontsize=6.5)
@@ -151,8 +153,8 @@ def fig2_corpus() -> None:
     ax.set_yticks(yy, [NAMES[o] for o in ids])
     ax.invert_yaxis()
     ax.set_xlabel("Fraction of candidate grasps (all 15,800 scenes)")
-    ax.set_xlim(0, 0.8)
-    ax.legend(loc="lower right", frameon=False)
+    ax.set_xlim(0, 0.9)
+    ax.legend(loc="upper right", frameon=False, bbox_to_anchor=(1.0, 0.99))
     ax.text(-0.36, 1.03, "b", transform=ax.transAxes, fontsize=9, fontweight="bold")
     save(fig, "fig2_lmgrasp")
 

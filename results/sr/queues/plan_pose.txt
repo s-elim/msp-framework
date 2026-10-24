@@ -1,0 +1,6 @@
+--pose results/sr/runs/pose_s0/scores.pt --split test --n-phys 4 --workers 20
+--pose results/sr/runs/pose_s0/scores.pt --split calib --n-phys 4 --workers 20
+--pose results/sr/runs/pose_s1/scores.pt --split test --n-phys 4 --workers 20
+--pose results/sr/runs/pose_s1/scores.pt --split calib --n-phys 4 --workers 20
+--pose results/sr/runs/pose_s2/scores.pt --split test --n-phys 4 --workers 20
+--pose results/sr/runs/pose_s2/scores.pt --split calib --n-phys 4 --workers 20

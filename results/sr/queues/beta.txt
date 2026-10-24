@@ -1,0 +1,21 @@
+--method msp --beta 1 --latent 32 --seed 0
+--method msp --beta 1 --latent 32 --seed 1
+--method msp --beta 1 --latent 32 --seed 2
+--method msp --beta 10 --latent 32 --seed 0
+--method msp --beta 10 --latent 32 --seed 1
+--method msp --beta 10 --latent 32 --seed 2
+--method msp --beta 100 --latent 32 --seed 0
+--method msp --beta 100 --latent 32 --seed 1
+--method msp --beta 100 --latent 32 --seed 2
+--method msp --beta 1000 --latent 32 --seed 0
+--method msp --beta 1000 --latent 32 --seed 1
+--method msp --beta 1000 --latent 32 --seed 2
+--method msp --beta 300 --latent 32 --seed 0 --holdout 1,6,9,15
+--method direct --seed 0 --holdout 1,6,9,15
+--method gqcnn --seed 0 --holdout 1,6,9,15
+--method msp --beta 300 --latent 32 --seed 1 --holdout 1,6,9,15
+--method direct --seed 1 --holdout 1,6,9,15
+--method gqcnn --seed 1 --holdout 1,6,9,15
+--method msp --beta 300 --latent 32 --seed 2 --holdout 1,6,9,15
+--method direct --seed 2 --holdout 1,6,9,15
+--method gqcnn --seed 2 --holdout 1,6,9,15

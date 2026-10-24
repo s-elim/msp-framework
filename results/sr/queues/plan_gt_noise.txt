@@ -1,0 +1,35 @@
+--pose gt --split test --n-phys 4 --workers 20
+--pose gt --split calib --n-phys 4 --workers 20
+--pose noise --rot-deg 1 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 2 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 5 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 10 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 20 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 45 --trans-mm 0 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 2 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 5 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 10 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 20 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 40 --noise-seed 0 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 1 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 2 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 5 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 10 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 20 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 45 --trans-mm 0 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 2 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 5 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 10 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 20 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 40 --noise-seed 1 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 1 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 2 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 5 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 10 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 20 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 45 --trans-mm 0 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 2 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 5 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 10 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 20 --noise-seed 2 --split test --n-phys 4 --workers 20
+--pose noise --rot-deg 0 --trans-mm 40 --noise-seed 2 --split test --n-phys 4 --workers 20

@@ -6,8 +6,9 @@
     python scripts/sr/train_lm.py --method gqcnn --seed 0       # grasp-aligned patch scorer
     ... --holdout 2,9,12,15   # unseen-object protocol: these objects never enter training
 
-Every method sees the same crops, the same candidate grasps and the same labels, and trains
-for the same number of epochs on the same CPU budget. Output: results/sr/runs/<tag>/scores.pt
+Every method sees the same crops, the same candidate grasps and the same labels, trains for the
+same number of epochs with the same training-time augmentation (`augment`), and is selected by
+its own validation loss among epochs >= SELECT_FROM. Output: results/sr/runs/<tag>/scores.pt
 """
 
 from __future__ import annotations
@@ -42,8 +43,34 @@ DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 T_SCALE = 10.0  # action translation in decimetres, so all 9 action coordinates are O(1)
 
 
+SELECT_FROM = 5  # checkpoints are selected among epochs >= 5 for every method
+
+
+def augment(obs: torch.Tensor, g: torch.Generator | None = None) -> torch.Tensor:
+    """Photometric and depth noise applied identically to every image-based method's training
+    crops: per-image brightness/contrast (+-20 %), per-channel gain (+-5 %), depth noise
+    (sd 0.01 in the normalised depth units, i.e. 2.5 mm). (B, 4, S, S) or (4, S, S)."""
+    one = obs.dim() == 3
+    x = obs.unsqueeze(0) if one else obs.clone()
+    b = x.shape[0]
+    dev = x.device
+    br = 1 + 0.4 * (torch.rand(b, 1, 1, 1, generator=g) - 0.5).to(dev)
+    gain = 1 + 0.1 * (torch.rand(b, 3, 1, 1, generator=g) - 0.5).to(dev)
+    rgb = x[:, :3]
+    m = rgb.mean(dim=(1, 2, 3), keepdim=True)
+    x[:, :3] = ((rgb - m) * br + m) * gain
+    x[:, :3] = x[:, :3].clamp(0, 1)
+    valid = x[:, 3:4] != 0
+    x[:, 3:4] = torch.where(valid, x[:, 3:4] + 0.01 * torch.randn(x[:, 3:4].shape,
+                                                                   generator=g).to(dev),
+                            x[:, 3:4])
+    return x[0] if one else x
+
+
 class LMGrasp(Dataset):
-    def __init__(self, path: Path, keep: torch.Tensor | None = None) -> None:
+    def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False
+                 ) -> None:
+        self.train = train
         b = torch.load(path, map_location="cpu", weights_only=False)
         if keep is not None:
             b = {k: (v[keep] if torch.is_tensor(v) and v.shape[:1] == keep.shape else v)
@@ -60,19 +87,23 @@ class LMGrasp(Dataset):
     def __getitem__(self, i: int) -> dict:
         b = self.b
         na = self.actions.shape[1]
-        return {"observation": b["obs"][i].float(), "actions": self.actions[i],
+        obs = b["obs"][i].float()
+        if self.train:
+            obs = augment(obs)
+        return {"observation": obs, "actions": self.actions[i],
                 "weights": torch.ones(na) / na, "succ": b["succ"][i][:, None],
                 "margin": torch.zeros(na, 1), "slip": b["slip"][i][:, None],
                 "index": torch.tensor(i)}
 
 
 def load_split(name: str, data: Path, holdout: set[int], unseen: bool) -> LMGrasp:
-    b = torch.load(data / f"{name}.pt", map_location="cpu", weights_only=False)
+    train = name == "train"
     if not holdout:
-        return LMGrasp(data / f"{name}.pt")
+        return LMGrasp(data / f"{name}.pt", train=train)
+    b = torch.load(data / f"{name}.pt", map_location="cpu", weights_only=False)
     is_held = torch.tensor([int(o) in holdout for o in b["obj_id"]])
     keep = is_held if unseen else ~is_held
-    return LMGrasp(data / f"{name}.pt", keep=keep)
+    return LMGrasp(data / f"{name}.pt", keep=keep, train=train)
 
 
 @torch.no_grad()
@@ -112,8 +143,8 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     cfg = TrainConfig(epochs=a.epochs, lr=a.lr, weight_decay=1e-4, warmup_epochs=2,
                       amp_dtype="off", beta=BetaSchedule.sufficiency_for_success(a.beta),
                       out_dir=str(out), seed=a.seed, train_samples=8,
-                      kl_warmup_epochs=15,
-                      deterministic_warmup_epochs=(a.epochs + 1) if direct else 10)
+                      kl_warmup_epochs=3,
+                      deterministic_warmup_epochs=(a.epochs + 1) if direct else 2)
     tr = Trainer(enc, head, dl["train"], dl["val"], cfg, DEV)
     hist = []
     best, best_state = math.inf, None
@@ -126,7 +157,7 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
         sv = score_split(enc, head, dsets["val"], direct, k=8)["s"]
         bce = bce_of(sv, dsets["val"].b["succ"])
         m["val/select_bce"] = bce
-        if bce < best:
+        if bce < best and tr.epoch >= SELECT_FROM:
             best = bce
             best_state = ({k: v.detach().clone() for k, v in enc.state_dict().items()},
                           {k: v.detach().clone() for k, v in head.state_dict().items()})
@@ -143,7 +174,7 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     scores = {split: score_split(enc, head, dsets[split], direct, k=32)
               for split in ("val", "calib", "test")}
     log.info("selected epoch %d (val BCE %.4f)",
-             int(np.argmin([h["val/select_bce"] for h in hist])), best)
+             SELECT_FROM + int(np.argmin([h["val/select_bce"] for h in hist][SELECT_FROM:])), best)
     return {"scores": scores, "history": hist}
 
 
@@ -190,7 +221,7 @@ def train_pose(a, dsets, out: Path) -> dict:
         tot, t0 = 0.0, time.time()
         for i in range(0, n - a.batch + 1, a.batch):
             j = perm[i:i + a.batch]
-            obs = tr.b["obs"][j].float().to(DEV)
+            obs = augment(tr.b["obs"][j].float()).to(DEV)
             R = tr.b["R"][j].to(DEV)
             dt = (tr.b["t"][j] - tr.b["c"][j]).to(DEV)
             Rh, dth = net(obs)
@@ -199,7 +230,7 @@ def train_pose(a, dsets, out: Path) -> dict:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
-            tot += float(loss) * len(j)
+            tot += float(loss.detach()) * len(j)
         net.eval()
         with torch.no_grad():
             va = dsets["val"]
@@ -210,7 +241,7 @@ def train_pose(a, dsets, out: Path) -> dict:
                                           (va.b["t"][i:i + 128] - va.b["c"][i:i + 128]).to(DEV),
                                           va.b["obj_id"][i:i + 128], syms)) * len(Rh))
             vloss = sum(vl) / len(va)
-        if vloss < best:
+        if vloss < best and ep >= SELECT_FROM:
             best, best_state = vloss, {k: v.detach().clone() for k, v in net.state_dict().items()}
         hist.append({"epoch": ep, "loss": tot / n, "val_loss": vloss, "sec": time.time() - t0})
         log.info("pose ep %d loss %.4f val %.4f %.0fs", ep, tot / n, vloss, time.time() - t0)
@@ -231,8 +262,11 @@ def train_pose(a, dsets, out: Path) -> dict:
 
 
 # ----------------------------------------------------------------------------- GQ-CNN
-def _patches(ds, idx):
-    depth = ds.b["obs"][idx, 3:4].float().to(DEV)
+def _patches(ds, idx, aug: bool = False):
+    obs = ds.b["obs"][idx].float()
+    if aug:
+        obs = augment(obs)
+    depth = obs[:, 3:4].to(DEV)
     return grasp_patches(depth, ds.b["T"][idx].to(DEV), ds.b["K"][idx].to(DEV),
                          ds.b["crop"][idx].to(DEV), ds.b["c"][idx].float().to(DEV))
 
@@ -251,16 +285,16 @@ def train_gqcnn(a, dsets, out: Path) -> dict:
         tot, t0 = 0.0, time.time()
         for i in range(0, n - bs + 1, bs):
             j = perm[i:i + bs]
-            xp, xs = _patches(tr, j)
+            xp, xs = _patches(tr, j, aug=True)
             y = tr.b["succ"][j].reshape(-1).to(DEV)
             loss = F.binary_cross_entropy_with_logits(net(xp, xs), y)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            tot += float(loss) * len(j)
+            tot += float(loss.detach()) * len(j)
         sv = gq_scores(net, dsets["val"])
         vb = bce_of(sv, dsets["val"].b["succ"])
-        if vb < best:
+        if vb < best and ep >= SELECT_FROM:
             best, best_state = vb, {k: v.detach().clone() for k, v in net.state_dict().items()}
         hist.append({"epoch": ep, "loss": tot / n, "val_bce": vb, "sec": time.time() - t0})
         log.info("gqcnn ep %d loss %.4f val %.4f %.0fs", ep, tot / n, vb, time.time() - t0)
@@ -290,7 +324,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--beta", type=float, default=300.0)
     ap.add_argument("--latent", type=int, default=32)
-    ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--threads", type=int, default=12)
@@ -298,6 +332,8 @@ def main() -> None:
     ap.add_argument("--data", default=str(REPO / "data/lm_grasp"))
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
+    if a.epochs <= SELECT_FROM:
+        ap.error(f"--epochs must exceed SELECT_FROM={SELECT_FROM}")
     torch.set_num_threads(a.threads)
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
     seed_everything(a.seed)
