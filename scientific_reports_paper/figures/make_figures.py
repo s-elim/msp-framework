@@ -375,7 +375,7 @@ def fig4_comparison() -> None:
 
     ax = axs[1]
     for g, lab, col, kind in rows:
-        if g.startswith("plan:"):
+        if g.startswith("plan:") and g not in m["groups"]:
             key = g[5:] if g[5:] in m["plan"] else None
             if key is None:
                 continue
@@ -385,7 +385,8 @@ def fig4_comparison() -> None:
             continue
         c = m["groups"][g]["selective_curve"]
         mu, sd = np.array(c["mean"]), np.array(c["sd"])
-        ax.plot(c["coverage"], mu, color=col, lw=1.2, label=lab)
+        ax.plot(c["coverage"], mu, color=col, lw=1.2, label=lab,
+                ls="--" if g.startswith("plan:") else "-")
         if np.isfinite(sd).all():
             ax.fill_between(c["coverage"], mu - sd, mu + sd, color=col, alpha=0.2, lw=0)
     ax.set_xlabel("Coverage (fraction of scenes acted on)")
