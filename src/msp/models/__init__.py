@@ -14,12 +14,15 @@ from msp.models.nets import (
     OutcomeHead,
     ResNetBackbone,
 )
+from msp.models.point4d import GeminiVLMAffordanceBridge, Point4DBackbone
 
 __all__ = [
     "AcquisitionNet",
     "Backbone",
     "BeliefEncoder",
+    "GeminiVLMAffordanceBridge",
     "MLPBackbone",
     "OutcomeHead",
+    "Point4DBackbone",
     "ResNetBackbone",
 ]

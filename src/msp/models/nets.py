@@ -167,8 +167,12 @@ class BeliefEncoder(nn.Module):
         synthetic world, a set is 3-D and a single vector is 2-D. Both are handled, because the
         integration tests run the whole pipeline on the vector world in seconds.
         """
-        is_image = obs.dim() >= 4
-        is_set = obs.dim() == 5 if is_image else obs.dim() == 3
+        is_point_cloud = self.backbone.__class__.__name__ == "Point4DBackbone"
+        if is_point_cloud:
+            is_set = obs.dim() == 4
+        else:
+            is_image = obs.dim() >= 4
+            is_set = obs.dim() == 5 if is_image else obs.dim() == 3
 
         h = self.encode_views(obs) if is_set else self.backbone(obs)
         mu, logvar = self.head(h).chunk(2, dim=-1)
