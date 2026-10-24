@@ -69,9 +69,13 @@ def augment(obs: torch.Tensor, g: torch.Generator | None = None) -> torch.Tensor
     return x[0] if one else x
 
 
+PLAN = REPO / "results/sr/plan"
+
+
 class LMGrasp(Dataset):
     def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False,
-                 teacher: torch.Tensor | None = None, alpha: float = 0.0) -> None:
+                 teacher: torch.Tensor | None = None, alpha: float = 0.0,
+                 planner: str = "") -> None:
         self.train = train
         self.teacher, self.alpha = teacher, alpha
         b = torch.load(path, map_location="cpu", weights_only=False)
@@ -81,6 +85,12 @@ class LMGrasp(Dataset):
         self.b = b
         a = b["actions"].clone()
         a[..., :3] *= T_SCALE
+        if planner:  # C4: each candidate's pose-then-plan score as a 10th action feature
+            ps = torch.load(PLAN / f"{planner}_p4_{path.stem}.pt", map_location="cpu",
+                            weights_only=False)["s"].float()
+            if keep is not None:
+                ps = ps[keep]
+            a = torch.cat([a, (2 * ps - 1)[..., None]], -1)
         self.actions = a
         self.n = b["obs"].shape[0]
 
@@ -123,17 +133,18 @@ def make_teacher() -> None:
 
 
 def load_split(name: str, data: Path, holdout: set[int], unseen: bool,
-               distill: float = 0.0) -> LMGrasp:
+               distill: float = 0.0, planner: str = "") -> LMGrasp:
     train = name == "train"
     if not holdout:
         if train and distill > 0:
             t = torch.load(TEACHER, map_location="cpu", weights_only=False)["t"]
-            return LMGrasp(data / f"{name}.pt", train=True, teacher=t, alpha=distill)
-        return LMGrasp(data / f"{name}.pt", train=train)
+            return LMGrasp(data / f"{name}.pt", train=True, teacher=t, alpha=distill,
+                           planner=planner)
+        return LMGrasp(data / f"{name}.pt", train=train, planner=planner)
     b = torch.load(data / f"{name}.pt", map_location="cpu", weights_only=False)
     is_held = torch.tensor([int(o) in holdout for o in b["obj_id"]])
     keep = is_held if unseen else ~is_held
-    return LMGrasp(data / f"{name}.pt", keep=keep, train=train)
+    return LMGrasp(data / f"{name}.pt", keep=keep, train=train, planner=planner)
 
 
 @torch.no_grad()
@@ -204,7 +215,8 @@ class LMTrainer(Trainer):
 # ----------------------------------------------------------------------------- MSP / direct
 def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=a.latent)
-    head = OutcomeHead(latent_dim=a.latent, action_dim=9, gripper_dim=0, hidden=256)
+    head = OutcomeHead(latent_dim=a.latent, action_dim=dsets["train"].actions.shape[-1],
+                       gripper_dim=0, hidden=256)
     dl = {k: DataLoader(v, batch_size=a.batch, shuffle=(k == "train"), collate_fn=collate,
                         num_workers=0, drop_last=(k == "train"))
           for k, v in dsets.items() if k in ("train", "val")}
@@ -486,6 +498,7 @@ def main() -> None:
     ap.add_argument("--distill", type=float, default=0.0, help="C2: teacher target weight")
     ap.add_argument("--lam", type=float, default=0.3, help="C3: weight per entropy-coded bit")
     ap.add_argument("--make-teacher", action="store_true")
+    ap.add_argument("--planner", default="", help="C4: plan tag whose scores feed the head")
     ap.add_argument("--design", action="store_true",
                     help="redesign study: write to results/sr/design and score val/calib only, "
                          "so no test number exists before the design is frozen")
@@ -517,11 +530,15 @@ def main() -> None:
 
     holdout = {int(x) for x in a.holdout.split(",") if x}
     data = Path(a.data)
-    dsets = {"train": load_split("train", data, holdout, unseen=False, distill=a.distill),
-             "val": load_split("val", data, holdout, unseen=False),
-             "calib": load_split("calib", data, holdout, unseen=bool(holdout)),
-             "test": load_split("test", data, holdout, unseen=bool(holdout))}
+    pl = a.planner
+    dsets = {"train": load_split("train", data, holdout, unseen=False, distill=a.distill,
+                                 planner=pl),
+             "val": load_split("val", data, holdout, unseen=False, planner=pl),
+             "calib": load_split("calib", data, holdout, unseen=bool(holdout), planner=pl),
+             "test": (load_split("test", data, holdout, unseen=bool(holdout), planner=pl)
+                      if not a.design else load_split("val", data, holdout, False, planner=pl))}
     variant = ((f"_rank{a.rank:g}" if a.rank else "") + (f"_kd{a.distill:g}" if a.distill else "")
+               + (f"_pl{a.planner}" if a.planner else "")
                + (f"_lam{a.lam:g}" if a.method == "qcode" else ""))
     tag = a.tag or (f"{a.method}" + (f"_b{a.beta:g}_d{a.latent}" if a.method == "msp" else "")
                     + variant
