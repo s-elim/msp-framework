@@ -15,6 +15,11 @@ pose-then-plan scores (results/sr/plan/*.pt), and computes, per run and aggregat
                        candidate of each calib scene, act on a test scene only if the
                        prediction set of its selected candidate is the singleton {success}
     pose               ADD(-S) < 0.1 d accuracy for pose runs (ADD-S for eggbox and glue)
+    comparisons        paired bootstrap over test scenes (10,000 resamples) of the difference in
+                       top-1 success between two methods, each averaged over its seeds
+
+Seed groups strip the trailing _s<seed>; direct-scorer seeds 5-14 exist only as deep-ensemble
+members and are grouped separately (direct_member) so every single-model group has seeds 0-4.
 
 Inexecutable candidates are failures and are kept in every metric.
 """
@@ -158,6 +163,28 @@ def score_row(s_te, s_ca, yt, yc, ot, v_te=None) -> dict:
     return row
 
 
+COMPARISONS = (("msp_b300_d32", "direct"), ("msp_b300_d32", "gqcnn"), ("direct", "gqcnn"),
+               ("ensemble5", "direct"), ("ensemble5", "msp_b300_d32"),
+               ("direct", "plan:pose_p4"), ("msp_b300_d32", "plan:pose_p4"),
+               ("plan:fpose_p4", "direct"), ("plan:fpose_p4", "ensemble5"),
+               ("plan:gt_p4", "plan:fpose_p4"))
+
+
+def top1_ok(s: np.ndarray, y: np.ndarray) -> np.ndarray:
+    return y[np.arange(len(y)), pick(s)]
+
+
+def paired_bootstrap(a: np.ndarray, b: np.ndarray, n: int = 10000, seed: int = 0) -> dict:
+    rng = np.random.default_rng(seed)
+    d = a - b
+    idx = rng.integers(0, len(d), (n, len(d)))
+    boots = d[idx].mean(1)
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    p = 2 * min((boots <= 0).mean(), (boots >= 0).mean())
+    return {"diff": float(d.mean()), "ci95": [float(lo), float(hi)], "p_boot": float(p),
+            "n_scenes": int(len(d))}
+
+
 def model_points(root: Path, n: int = 1000) -> dict[int, np.ndarray]:
     import trimesh
 
@@ -226,7 +253,8 @@ def main() -> None:
                                 "executable": float(lab[k]["exec"].float().mean()),
                                 "oracle_any_success": float(y[k].max(1).mean())}
                             for k in y},
-                 "runs": {}, "plan": {}, "groups": {}}
+                 "runs": {}, "plan": {}, "groups": {}, "comparisons": {}}
+    oks: dict[str, np.ndarray] = {}
     res["corpus"]["test"]["random_top1"] = float(y["test"].mean())
 
     for d in sorted(Path(a.runs).glob("*/scores.pt")):
@@ -248,6 +276,8 @@ def main() -> None:
             s_te, s_ca = sc["test"]["s"].numpy(), sc["calib"]["s"].numpy()
             v_te = sc["test"]["v"].numpy() if "v" in sc["test"] else None
             row |= score_row(s_te, s_ca, yt, yc, ot, v_te)
+            if not held:
+                oks[name] = top1_ok(s_te, yt)
             if "logvar" in sc["test"] and r["args"]["method"] == "msp":
                 mu, lv = sc["test"]["mu"], sc["test"]["logvar"]
                 kl = 0.5 * (lv.exp() + mu ** 2 - 1 - lv).sum(-1)
@@ -272,11 +302,13 @@ def main() -> None:
                "members": [f.parent.name for f in files]}
         row |= score_row(st.mean(0), scal, y["test"], y["calib"], obj["test"], st.var(0))
         res["runs"][name] = row
+        oks[name] = top1_ok(st.mean(0), y["test"])
 
     for p in sorted(Path(a.plan).glob("*_test.pt")):
         tag = p.name[: -len("_test.pt")]
         s_te = torch.load(p, map_location="cpu", weights_only=False)["s"].numpy()
         row = ranking_metrics(s_te, y["test"], obj["test"])
+        oks["plan:" + tag] = top1_ok(s_te, y["test"])
         pc = Path(a.plan) / f"{tag}_calib.pt"
         if pc.exists():
             s_ca = torch.load(pc, map_location="cpu", weights_only=False)["s"].numpy()
@@ -290,9 +322,26 @@ def main() -> None:
         res["plan"][tag] = row
 
     # seed groups: strip the trailing _s<seed>
+    def group_of(name: str) -> str:
+        m = re.match(r"direct_s(\d+)$", name)
+        if m and int(m.group(1)) >= 5:
+            return "direct_member"
+        return re.sub(r"_(s|e)\d+$", "", name)
+
     groups = defaultdict(list)
+    gok = defaultdict(list)
     for name, row in res["runs"].items():
-        groups[re.sub(r"_(s|e)\d+$", "", name)].append(row)
+        groups[group_of(name)].append(row)
+        if name in oks:
+            gok[group_of(name)].append(oks[name])
+    for name, v in oks.items():
+        if name.startswith("plan:"):
+            m = re.match(r"plan:(pose.*)_s\d+(_p\d+)$", name)
+            gok["plan:" + m.group(1) + m.group(2) if m else name].append(v)
+    for ga, gb in COMPARISONS:
+        if gok.get(ga) and gok.get(gb):
+            res["comparisons"][f"{ga} - {gb}"] = paired_bootstrap(np.mean(gok[ga], 0),
+                                                                  np.mean(gok[gb], 0))
     for name, row in res["plan"].items():
         m = re.match(r"(pose.*)_s\d+(_p\d+)$", name)
         if m:
