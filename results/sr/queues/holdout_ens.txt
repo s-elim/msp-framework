@@ -1,0 +1,2 @@
+--method direct --seed 3 --holdout 1,6,9,15
+--method direct --seed 4 --holdout 1,6,9,15

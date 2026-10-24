@@ -1,0 +1,12 @@
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --seed 0 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --seed 0 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --vlm-control shuffle --seed 0 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --seed 1 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --seed 1 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --vlm-control shuffle --seed 1 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --seed 2 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --seed 2 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --vlm-aux 0.3 --vlm-control shuffle --seed 2 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --vlm-mix-ens --seed 0 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --vlm-mix-ens --seed 1 --design
+--method direct --vlm-labels gemini-robotics-er-2-preview --distill 0.5 --vlm-mix-ens --seed 2 --design
