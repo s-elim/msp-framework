@@ -1,0 +1,2 @@
+--pose results/sr/runs/fpose/scores.pt --split train --n-phys 4 --workers 20
+--pose results/sr/runs/fpose/scores.pt --split val --n-phys 4 --workers 20
