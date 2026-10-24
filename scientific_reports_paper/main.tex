@@ -124,7 +124,7 @@ Because one code scores every candidate, its size is what a robot must transmit 
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\textwidth]{figures/fig5_payload.pdf}
+\IfFileExists{figures/fig5_payload.pdf}{\includegraphics[width=\textwidth]{figures/fig5_payload.pdf}}{\fbox{\parbox{0.9\textwidth}{\centering\vspace{25mm}fig5 pending\vspace{25mm}}}}
 \caption{\textbf{Decision quality per transmitted bit.} \textbf{a}, Top-1 success against the entropy-coded payload per scene, as the upper envelope over the number of transmitted coordinates and the bits per coordinate; bands: $\pm$ s.d. over five seeds. \textbf{b}, The stochastic code across rate weights $\beta$ (three seeds each).}\label{fig:payload}
 \end{figure}
 

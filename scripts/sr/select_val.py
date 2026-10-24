@@ -32,8 +32,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(REPO / "results/sr/design/val_selection.json"))
     a = ap.parse_args()
-    yv = torch.load(REPO / "data/lm_grasp/val.pt", map_location="cpu",
-                    weights_only=False)["succ"].numpy()
+    vb = torch.load(REPO / "data/lm_grasp/val.pt", map_location="cpu", weights_only=False)
+    yv = vb["succ"].numpy()
+    row = {(int(o), int(i)): n for n, (o, i) in enumerate(zip(vb["obj_id"], vb["im_id"]))}
+
+    def labels(res: dict, split: str) -> np.ndarray:
+        """Outcomes aligned with a run's scored split (holdout runs score a subset of val)."""
+        ix = res.get("split_index", {}).get(split)
+        if ix is None:
+            return yv
+        return yv[[row[(int(o), int(i))] for o, i in zip(ix["obj_id"], ix["im_id"])]]
     files = sorted((REPO / "results/sr/design").glob("*/scores.pt"))
     files += [REPO / "results/sr/runs" / b.format(s) / "scores.pt" for b in BASELINES
               for s in range(3)]
@@ -42,11 +50,18 @@ def main() -> None:
         name = f.parent.name
         if name.startswith("smoke") or not f.exists():
             continue
-        sc = torch.load(f, map_location="cpu", weights_only=False)["scores"]["val"]
+        res = torch.load(f, map_location="cpu", weights_only=False)
+        sc = res["scores"]["val"]
         s = sc["s"].numpy()
-        ok = yv[np.arange(len(yv)), pick(s)]
-        w, _ = within_scene_auc(s, yv)
+        y = labels(res, "val")
+        ok = y[np.arange(len(y)), pick(s)]
+        w, _ = within_scene_auc(s, y)
         rows[name] = {"within_scene_auc": w, "top1_success": float(ok.mean())}
+        if "val_unseen" in res["scores"]:  # held-out objects: the secondary selection check
+            su = res["scores"]["val_unseen"]["s"].numpy()
+            yu = labels(res, "val_unseen")
+            rows[name]["unseen_within_auc"] = within_scene_auc(su, yu)[0]
+            rows[name]["unseen_top1"] = float(yu[np.arange(len(yu)), pick(su)].mean())
         if "bits" in sc:
             rows[name]["bits_learned_prior"] = float(sc["bits"].float().mean())
     groups = defaultdict(list)
