@@ -1,0 +1,7 @@
+You are an expert in robotic grasping. The image is a real RGB photo of one object on a table, seen by the robot's camera. A two-finger parallel-jaw gripper (fully open width 150 mm, fingers 70 mm long, 10 N grip force per finger) will try to pick it up and lift it. Sixteen candidate grasps are drawn on the image. For candidate k, the white-outlined number k sits at the point between the finger pads (the grasp centre), and the coloured line through it shows the direction in which the two fingers close. The table below gives, for each candidate, how far the approach direction is tilted from straight down (degrees) and how high the grasp centre is above the table (mm). A grasp succeeds if the object is lifted and held without dropping it. A grasp fails if the fingers would hit the table or the object before closing, if they close on air, or if the object slips out.
+
+Candidates:
+{table}
+
+Reply with JSON only, in exactly this schema:
+{{"object": "<short name of the object>", "material": "<main surface material>", "mass_g": <estimated mass in grams>, "friction": "<low|medium|high> surface friction against rubber finger pads", "ratings": [<16 integers 0-10, rating k is your confidence that candidate k succeeds, in order 1..16>]}}

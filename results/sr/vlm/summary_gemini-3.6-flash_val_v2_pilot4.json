@@ -1,0 +1,12 @@
+{
+ "model": "gemini-3.6-flash",
+ "split": "val",
+ "n": 52,
+ "parsed": 51,
+ "usd_total": 0.084006,
+ "usd_per_call": 0.0016155,
+ "tokens_in_mean": 1354.0,
+ "tokens_out_mean": 160.0,
+ "latency_median_s": 2.9445900917053223,
+ "cumulative_usd": 0.41100175
+}

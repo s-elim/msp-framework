@@ -75,9 +75,14 @@ PLAN = REPO / "results/sr/plan"
 class LMGrasp(Dataset):
     def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False,
                  teacher: torch.Tensor | None = None, alpha: float = 0.0,
-                 planner: str = "") -> None:
+                 planner: str = "", aux: torch.Tensor | None = None) -> None:
         self.train = train
         self.teacher, self.alpha = teacher, alpha
+        # study 3 V1b: per-candidate VLM score in [0, 1] as an auxiliary regression target on
+        # the head's margin channel (otherwise a zero target at weight 0.01)
+        self.aux = aux[keep] if (aux is not None and keep is not None) else aux
+        if teacher is not None and keep is not None:
+            self.teacher = teacher[keep]
         b = torch.load(path, map_location="cpu", weights_only=False)
         if keep is not None:
             b = {k: (v[keep] if torch.is_tensor(v) and v.shape[:1] == keep.shape else v)
@@ -105,9 +110,10 @@ class LMGrasp(Dataset):
             obs = augment(obs)
         y = b["succ"][i].float()
         soft = y if self.teacher is None else (1 - self.alpha) * y + self.alpha * self.teacher[i]
+        margin = torch.zeros(na, 1) if self.aux is None else self.aux[i][:, None]
         return {"observation": obs, "actions": self.actions[i],
                 "weights": torch.ones(na) / na, "succ": soft[:, None], "succ_hard": y,
-                "margin": torch.zeros(na, 1), "slip": b["slip"][i][:, None],
+                "margin": margin, "slip": b["slip"][i][:, None],
                 "index": torch.tensor(i)}
 
 
@@ -132,9 +138,50 @@ def make_teacher() -> None:
     log.info("teacher written: %s", TEACHER)
 
 
+VLM = REPO / "results/sr/vlm"
+
+
+def vlm_targets(name: str, a) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Study 3 teacher tensors (N, Na) in [0, 1] for split `name`, or (None, None).
+
+    --vlm-labels: the VLM agreement score / 10 (scenes whose reply failed to parse fall back to
+    the hard label for distillation and to the split mean for the auxiliary target).
+    --vlm-control const: t = 0.5 everywhere (label smoothing). shuffle: VLM scores permuted
+    across scenes of the same object (seeded), which keeps their marginal statistics and object
+    base rates but breaks the scene-specific geometry."""
+    if not a.vlm_labels:
+        return None, None
+    y = torch.load(Path(a.data) / f"{name}.pt", map_location="cpu", weights_only=False)
+    L = torch.load(VLM / f"labels_{a.vlm_labels}_{name}_v2.pt", map_location="cpu",
+                   weights_only=False)
+    t = L["ratings"].float() / 10.0
+    miss = torch.isnan(t).any(1)
+    if a.vlm_control == "shuffle":
+        g = torch.Generator().manual_seed(1000 + a.seed)
+        oid = y["obj_id"]
+        t2 = t.clone()
+        for o in oid.unique():
+            ix = torch.nonzero((oid == o) & ~miss).squeeze(1)
+            t2[ix] = t[ix[torch.randperm(len(ix), generator=g)]]
+        t = t2
+    elif a.vlm_control == "const":
+        t = torch.full_like(t, 0.5)
+    teach = torch.where(miss[:, None], y["succ"].float(), t)
+    aux = torch.where(miss[:, None], t[~miss].mean(), t)
+    return (teach if a.distill > 0 else None), (aux if a.vlm_aux > 0 else None)
+
+
 def load_split(name: str, data: Path, holdout: set[int], unseen: bool,
-               distill: float = 0.0, planner: str = "") -> LMGrasp:
+               distill: float = 0.0, planner: str = "", a=None) -> LMGrasp:
     train = name == "train"
+    if train and a is not None and a.vlm_labels:
+        teach, aux = vlm_targets(name, a)
+        keep = None
+        if holdout:
+            b = torch.load(data / f"{name}.pt", map_location="cpu", weights_only=False)
+            keep = ~torch.tensor([int(o) in holdout for o in b["obj_id"]])
+        return LMGrasp(data / f"{name}.pt", keep=keep, train=True, teacher=teach,
+                       alpha=distill, planner=planner, aux=aux)
     if not holdout:
         if train and distill > 0:
             t = torch.load(TEACHER, map_location="cpu", weights_only=False)["t"]
@@ -220,8 +267,11 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     dl = {k: DataLoader(v, batch_size=a.batch, shuffle=(k == "train"), collate_fn=collate,
                         num_workers=0, drop_last=(k == "train"))
           for k, v in dsets.items() if k in ("train", "val")}
+    beta = BetaSchedule.sufficiency_for_success(a.beta)
+    if a.vlm_aux > 0:  # study 3 V1b: VLM score regressed on the margin channel
+        beta = replace(beta, margin=a.vlm_aux * a.beta)
     cfg = TrainConfig(epochs=a.epochs, lr=a.lr, weight_decay=1e-4, warmup_epochs=2,
-                      amp_dtype="off", beta=BetaSchedule.sufficiency_for_success(a.beta),
+                      amp_dtype="off", beta=beta,
                       out_dir=str(out), seed=a.seed, train_samples=8,
                       kl_warmup_epochs=3,
                       deterministic_warmup_epochs=(a.epochs + 1) if direct else 2)
@@ -499,6 +549,11 @@ def main() -> None:
     ap.add_argument("--lam", type=float, default=0.3, help="C3: weight per entropy-coded bit")
     ap.add_argument("--make-teacher", action="store_true")
     ap.add_argument("--planner", default="", help="C4: plan tag whose scores feed the head")
+    ap.add_argument("--vlm-labels", default="", help="study 3: VLM label tag, e.g. "
+                    "gemini-robotics-er-2-preview (files labels_<tag>_<split>_v2.pt)")
+    ap.add_argument("--vlm-aux", type=float, default=0.0,
+                    help="study 3 V1b: auxiliary VLM-score weight, relative to beta")
+    ap.add_argument("--vlm-control", default="", choices=["", "const", "shuffle"])
     ap.add_argument("--design", action="store_true",
                     help="redesign study: write to results/sr/design and score val/calib only, "
                          "so no test number exists before the design is frozen")
@@ -519,8 +574,10 @@ def main() -> None:
         return
     if a.method is None:
         ap.error("--method is required")
-    if a.distill > 0 and a.holdout:
+    if a.distill > 0 and a.holdout and not a.vlm_labels:
         ap.error("the C2 teacher saw every object; it cannot be used with --holdout")
+    if (a.vlm_aux > 0 or a.vlm_control) and not a.vlm_labels:
+        ap.error("--vlm-aux/--vlm-control need --vlm-labels")
     if a.epochs <= SELECT_FROM:
         ap.error(f"--epochs must exceed SELECT_FROM={SELECT_FROM}")
     torch.set_num_threads(a.threads)
@@ -532,18 +589,25 @@ def main() -> None:
     data = Path(a.data)
     pl = a.planner
     dsets = {"train": load_split("train", data, holdout, unseen=False, distill=a.distill,
-                                 planner=pl),
+                                 planner=pl, a=a),
              "val": load_split("val", data, holdout, unseen=False, planner=pl),
              "calib": load_split("calib", data, holdout, unseen=bool(holdout), planner=pl),
              "test": (load_split("test", data, holdout, unseen=bool(holdout), planner=pl)
                       if not a.design else load_split("val", data, holdout, False, planner=pl))}
-    variant = ((f"_rank{a.rank:g}" if a.rank else "") + (f"_kd{a.distill:g}" if a.distill else "")
+    if holdout:  # held-out objects of the val split: the secondary selection check
+        dsets["val_unseen"] = load_split("val", data, holdout, unseen=True, planner=pl)
+    vl = ("_vlm" + (f"kd{a.distill:g}" if a.distill else "") + (f"aux{a.vlm_aux:g}" if a.vlm_aux else "")
+          + (f"_{a.vlm_control}" if a.vlm_control else "")) if a.vlm_labels else ""
+    variant = (vl + (f"_rank{a.rank:g}" if a.rank else "")
+               + (f"_kd{a.distill:g}" if a.distill and not a.vlm_labels else "")
                + (f"_pl{a.planner}" if a.planner else "")
                + (f"_lam{a.lam:g}" if a.method == "qcode" else ""))
     tag = a.tag or (f"{a.method}" + (f"_b{a.beta:g}_d{a.latent}" if a.method == "msp" else "")
                     + variant
                     + (f"_ho{a.holdout.replace(',', '-')}" if holdout else "") + f"_s{a.seed}")
     a.splits = ("val", "calib") if a.design else ("val", "calib", "test")
+    if holdout:
+        a.splits += ("val_unseen",)
     out = REPO / ("results/sr/design" if a.design else "results/sr/runs") / tag
     out.mkdir(parents=True, exist_ok=True)
     log.info("%s: train %d val %d calib %d test %d", tag,
