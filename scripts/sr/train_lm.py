@@ -20,6 +20,7 @@ import math
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +34,8 @@ sys.path.insert(0, str(REPO / "src"))
 from msp.belief import DiagonalGaussianBelief  # noqa: E402
 from msp.data.synthetic import collate  # noqa: E402
 from msp.engine.trainer import TrainConfig, Trainer  # noqa: E402
-from msp.math.bottleneck import BetaSchedule  # noqa: E402
+from msp.math.bottleneck import BetaSchedule, distortion, vib_objective  # noqa: E402
+from msp.types import Outcome  # noqa: E402
 from msp.models import BeliefEncoder, OutcomeHead, ResNetBackbone  # noqa: E402
 from msp.models.lm_baselines import GraspPatchCNN, PoseRegressor, grasp_patches  # noqa: E402
 from msp.utils.seed import seed_everything  # noqa: E402
@@ -68,9 +70,10 @@ def augment(obs: torch.Tensor, g: torch.Generator | None = None) -> torch.Tensor
 
 
 class LMGrasp(Dataset):
-    def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False
-                 ) -> None:
+    def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False,
+                 teacher: torch.Tensor | None = None, alpha: float = 0.0) -> None:
         self.train = train
+        self.teacher, self.alpha = teacher, alpha
         b = torch.load(path, map_location="cpu", weights_only=False)
         if keep is not None:
             b = {k: (v[keep] if torch.is_tensor(v) and v.shape[:1] == keep.shape else v)
@@ -90,15 +93,42 @@ class LMGrasp(Dataset):
         obs = b["obs"][i].float()
         if self.train:
             obs = augment(obs)
+        y = b["succ"][i].float()
+        soft = y if self.teacher is None else (1 - self.alpha) * y + self.alpha * self.teacher[i]
         return {"observation": obs, "actions": self.actions[i],
-                "weights": torch.ones(na) / na, "succ": b["succ"][i][:, None],
+                "weights": torch.ones(na) / na, "succ": soft[:, None], "succ_hard": y,
                 "margin": torch.zeros(na, 1), "slip": b["slip"][i][:, None],
                 "index": torch.tensor(i)}
 
 
-def load_split(name: str, data: Path, holdout: set[int], unseen: bool) -> LMGrasp:
+TEACHER = REPO / "results/sr/teacher/train_direct_s5-14.pt"
+
+
+def make_teacher() -> None:
+    """Mean success prediction on the TRAIN split of the 10 direct scorers with seeds 5-14
+    (redesign candidate C2). These seeds are never evaluated as single models."""
+    ds = LMGrasp(REPO / "data/lm_grasp/train.pt")
+    ps = []
+    for k in range(5, 15):
+        enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=False), latent_dim=32)
+        head = OutcomeHead(latent_dim=32, action_dim=9, gripper_dim=0, hidden=256)
+        ck = torch.load(REPO / f"results/sr/runs/direct_s{k}/best.pth", map_location="cpu",
+                        weights_only=False)
+        enc.load_state_dict(ck["encoder"])
+        head.load_state_dict(ck["head"])
+        ps.append(score_split(enc.to(DEV), head.to(DEV), ds, direct=True)["s"])
+    TEACHER.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"t": torch.stack(ps).mean(0), "members": list(range(5, 15))}, TEACHER)
+    log.info("teacher written: %s", TEACHER)
+
+
+def load_split(name: str, data: Path, holdout: set[int], unseen: bool,
+               distill: float = 0.0) -> LMGrasp:
     train = name == "train"
     if not holdout:
+        if train and distill > 0:
+            t = torch.load(TEACHER, map_location="cpu", weights_only=False)["t"]
+            return LMGrasp(data / f"{name}.pt", train=True, teacher=t, alpha=distill)
         return LMGrasp(data / f"{name}.pt", train=train)
     b = torch.load(data / f"{name}.pt", map_location="cpu", weights_only=False)
     is_held = torch.tensor([int(o) in holdout for o in b["obj_id"]])
@@ -133,6 +163,44 @@ def bce_of(s: torch.Tensor, y: torch.Tensor) -> float:
     return float(F.binary_cross_entropy(s.clamp(1e-6, 1 - 1e-6), y.float()))
 
 
+def pairwise_rank_loss(logit: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Within-scene pairwise logistic loss. logit, y: (B, Na). Mean over (success, failure)
+    pairs of the same scene; scenes with one outcome only contribute nothing."""
+    d = logit[:, :, None] - logit[:, None, :]  # (B, Na, Na): l_i - l_j
+    m = (y[:, :, None] > 0.5) & (y[:, None, :] < 0.5)
+    if not m.any():
+        return logit.sum() * 0.0
+    return F.softplus(-d[m]).mean()
+
+
+class LMTrainer(Trainer):
+    """Trainer with an optional within-scene ranking term (redesign candidate C1), added on the
+    marginal success logit log(p_bar / (1 - p_bar)), p_bar = mean over the K posterior draws."""
+
+    rank_w: float = 0.0
+
+    def _forward(self, batch):
+        if self.rank_w <= 0 or not self.encoder.training:
+            return super()._forward(batch)
+        # one forward pass shared by the VIB terms and the ranking term (parent logic inlined)
+        obs = batch["observation"].to(self.device)
+        act = batch["actions"].to(self.device)
+        y = Outcome(succ=batch["succ"].to(self.device), margin=batch["margin"].to(self.device),
+                    slip=batch["slip"].to(self.device))
+        bel = self.encoder(obs)
+        z = bel.mu.unsqueeze(1) if self._deterministic_now() else bel.rsample(
+            self.cfg.train_samples)
+        pred = self.head(z, act)
+        terms = vib_objective(pred.float(), y.expand_to(z.shape[1]), bel.mu.float(),
+                              bel.logvar.float(), self.cfg.beta,
+                              weights=batch["weights"].to(self.device),
+                              rate_weight=self._rate_weight_at(self.epoch))
+        p = torch.sigmoid(pred.succ_logit.float()).squeeze(-1).mean(1).clamp(1e-6, 1 - 1e-6)
+        rl = pairwise_rank_loss(torch.log(p) - torch.log1p(-p),
+                                batch["succ_hard"].to(self.device))
+        return replace(terms, loss=terms.loss + self.cfg.beta.succ * self.rank_w * rl)
+
+
 # ----------------------------------------------------------------------------- MSP / direct
 def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=a.latent)
@@ -145,7 +213,8 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
                       out_dir=str(out), seed=a.seed, train_samples=8,
                       kl_warmup_epochs=3,
                       deterministic_warmup_epochs=(a.epochs + 1) if direct else 2)
-    tr = Trainer(enc, head, dl["train"], dl["val"], cfg, DEV)
+    tr = LMTrainer(enc, head, dl["train"], dl["val"], cfg, DEV)
+    tr.rank_w = a.rank
     hist = []
     best, best_state = math.inf, None
     while tr.epoch < cfg.epochs:
@@ -171,10 +240,102 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     tr.save("last.pth")
     enc.load_state_dict(best_state[0])
     head.load_state_dict(best_state[1])
-    scores = {split: score_split(enc, head, dsets[split], direct, k=32)
-              for split in ("val", "calib", "test")}
+    scores = {split: score_split(enc, head, dsets[split], direct, k=32) for split in a.splits}
     log.info("selected epoch %d (val BCE %.4f)",
              SELECT_FROM + int(np.argmin([h["val/select_bce"] for h in hist][SELECT_FROM:])), best)
+    return {"scores": scores, "history": hist}
+
+
+# ----------------------------------------------------------------------------- C3: qcode
+class FactorizedPrior(torch.nn.Module):
+    """Static per-dimension Gaussian entropy model for an integer-quantised code. The code length
+    of y (B, d) is -sum_j log2 P(y_j), P = Gaussian mass of the unit bin around y_j (Balle et
+    al. 2017, without the hyperprior)."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        self.m = torch.nn.Parameter(torch.zeros(d))
+        self.log_s = torch.nn.Parameter(torch.zeros(d))
+
+    def bits(self, y: torch.Tensor) -> torch.Tensor:
+        s = self.log_s.exp().clamp_min(0.05)
+        n = torch.distributions.Normal(self.m, s)
+        p = (n.cdf(y + 0.5) - n.cdf(y - 0.5)).clamp_min(1e-9)
+        return -(torch.log2(p)).sum(-1)
+
+
+@torch.no_grad()
+def qcode_scores(enc, head, prior, ds) -> dict:
+    was = enc.training
+    enc.eval()
+    head.eval()
+    ss, bs, cs = [], [], []
+    for i in range(0, len(ds), 128):
+        y = torch.round(enc(ds.b["obs"][i:i + 128].float().to(DEV)).mu)
+        act = ds.actions[i:i + 128].to(DEV)
+        ss.append(head.success_probs(y.unsqueeze(1), act).squeeze(1).cpu())
+        bs.append(prior.bits(y).cpu())
+        cs.append(y.cpu().to(torch.int16))
+    enc.train(was)
+    head.train(was)
+    return {"s": torch.cat(ss), "bits": torch.cat(bs), "code": torch.cat(cs)}
+
+
+def train_qcode(a, dsets, out: Path) -> dict:
+    """Redesign candidate C3: deterministic code, additive uniform noise as the quantisation
+    proxy in training, rounding at test, loss = beta-weighted outcome NLL + lam * code bits.
+    Same encoder, head, data, augmentation, epochs, optimiser and selection rule as `direct`."""
+    enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=a.latent)
+    head = OutcomeHead(latent_dim=a.latent, action_dim=9, gripper_dim=0, hidden=256)
+    prior = FactorizedPrior(a.latent)
+    enc, head, prior = enc.to(DEV), head.to(DEV), prior.to(DEV)
+    beta = BetaSchedule.sufficiency_for_success(a.beta)
+    params = list(enc.parameters()) + list(head.parameters()) + list(prior.parameters())
+    opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=1e-4)
+    dl = DataLoader(dsets["train"], batch_size=a.batch, shuffle=True, collate_fn=collate,
+                    num_workers=0, drop_last=True)
+    hist, best, best_state = [], math.inf, None
+    for ep in range(a.epochs):
+        w = 2
+        lr = a.lr * ((ep + 1) / w if ep < w else
+                     0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * (ep - w) / max(1, a.epochs - w))))
+        for g in opt.param_groups:
+            g["lr"] = lr
+        lam = 0.0 if ep < 2 else a.lam * min(1.0, (ep - 1) / 3.0)
+        enc.train()
+        head.train()
+        t0, tot, tb, n = time.time(), 0.0, 0.0, 0
+        for batch in dl:
+            obs = batch["observation"].to(DEV)
+            y = enc(obs).mu
+            yt = y + (torch.rand_like(y) - 0.5)
+            pred = head(yt.unsqueeze(1), batch["actions"].to(DEV))
+            tgt = Outcome(succ=batch["succ"].to(DEV), margin=batch["margin"].to(DEV),
+                          slip=batch["slip"].to(DEV)).expand_to(1)
+            bits = prior.bits(yt).mean()
+            loss = distortion(pred, tgt).weighted_sum(beta) + lam * bits
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
+            opt.step()
+            tot, tb, n = tot + float(loss.detach()), tb + float(bits.detach()), n + 1
+        sv = qcode_scores(enc, head, prior, dsets["val"])
+        bce = bce_of(sv["s"], dsets["val"].b["succ"])
+        if bce < best and ep >= SELECT_FROM:
+            best = bce
+            best_state = [{k: v.detach().clone() for k, v in m.state_dict().items()}
+                          for m in (enc, head, prior)]
+        hist.append({"epoch": ep, "loss": tot / n, "train_bits": tb / n, "val_select_bce": bce,
+                     "val_bits": float(sv["bits"].mean()), "sec": time.time() - t0})
+        log.info("qcode ep %d loss %.3f bits(train) %.1f val bce %.4f val bits %.1f %.0fs", ep,
+                 tot / n, tb / n, bce, float(sv["bits"].mean()), time.time() - t0)
+    for m, st in zip((enc, head, prior), best_state):
+        m.load_state_dict(st)
+    torch.save({"encoder": enc.state_dict(), "head": head.state_dict(),
+                "prior": prior.state_dict()}, out / "best.pth")
+    scores = {split: qcode_scores(enc, head, prior, dsets[split]) for split in a.splits}
+    log.info("selected epoch %d (val BCE %.4f)", SELECT_FROM + int(np.argmin(
+        [h["val_select_bce"] for h in hist][SELECT_FROM:])), best)
     return {"scores": scores, "history": hist}
 
 
@@ -320,7 +481,14 @@ def gq_scores(net, ds) -> torch.Tensor:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--method", choices=["msp", "direct", "pose", "gqcnn"], required=True)
+    ap.add_argument("--method", choices=["msp", "direct", "pose", "gqcnn", "qcode"])
+    ap.add_argument("--rank", type=float, default=0.0, help="C1: within-scene ranking weight")
+    ap.add_argument("--distill", type=float, default=0.0, help="C2: teacher target weight")
+    ap.add_argument("--lam", type=float, default=0.3, help="C3: weight per entropy-coded bit")
+    ap.add_argument("--make-teacher", action="store_true")
+    ap.add_argument("--design", action="store_true",
+                    help="redesign study: write to results/sr/design and score val/calib only, "
+                         "so no test number exists before the design is frozen")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--beta", type=float, default=300.0)
     ap.add_argument("--latent", type=int, default=32)
@@ -332,6 +500,14 @@ def main() -> None:
     ap.add_argument("--data", default=str(REPO / "data/lm_grasp"))
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
+    if a.make_teacher:
+        logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
+        make_teacher()
+        return
+    if a.method is None:
+        ap.error("--method is required")
+    if a.distill > 0 and a.holdout:
+        ap.error("the C2 teacher saw every object; it cannot be used with --holdout")
     if a.epochs <= SELECT_FROM:
         ap.error(f"--epochs must exceed SELECT_FROM={SELECT_FROM}")
     torch.set_num_threads(a.threads)
@@ -341,13 +517,17 @@ def main() -> None:
 
     holdout = {int(x) for x in a.holdout.split(",") if x}
     data = Path(a.data)
-    dsets = {"train": load_split("train", data, holdout, unseen=False),
+    dsets = {"train": load_split("train", data, holdout, unseen=False, distill=a.distill),
              "val": load_split("val", data, holdout, unseen=False),
              "calib": load_split("calib", data, holdout, unseen=bool(holdout)),
              "test": load_split("test", data, holdout, unseen=bool(holdout))}
+    variant = ((f"_rank{a.rank:g}" if a.rank else "") + (f"_kd{a.distill:g}" if a.distill else "")
+               + (f"_lam{a.lam:g}" if a.method == "qcode" else ""))
     tag = a.tag or (f"{a.method}" + (f"_b{a.beta:g}_d{a.latent}" if a.method == "msp" else "")
+                    + variant
                     + (f"_ho{a.holdout.replace(',', '-')}" if holdout else "") + f"_s{a.seed}")
-    out = REPO / "results/sr/runs" / tag
+    a.splits = ("val", "calib") if a.design else ("val", "calib", "test")
+    out = REPO / ("results/sr/design" if a.design else "results/sr/runs") / tag
     out.mkdir(parents=True, exist_ok=True)
     log.info("%s: train %d val %d calib %d test %d", tag,
              *(len(dsets[k]) for k in ("train", "val", "calib", "test")))
@@ -356,16 +536,18 @@ def main() -> None:
         res = train_msp(a, dsets, out, direct=(a.method == "direct"))
     elif a.method == "pose":
         res = train_pose(a, dsets, out)
+    elif a.method == "qcode":
+        res = train_qcode(a, dsets, out)
     else:
         res = train_gqcnn(a, dsets, out)
-    res["args"] = vars(a)
+    res["args"] = {k: v for k, v in vars(a).items() if k != "splits"}
     res["wall_seconds"] = time.time() - t0
     res["device"] = str(DEV)
     res["split_index"] = {k: {"obj_id": v.b["obj_id"], "im_id": v.b["im_id"]}
-                          for k, v in dsets.items() if k != "train"}
+                          for k, v in dsets.items() if k in a.splits}
     torch.save(res, out / "scores.pt")
     (out / "done.json").write_text(json.dumps({"wall_seconds": res["wall_seconds"],
-                                               "args": vars(a)}, indent=1))
+                                               "args": res["args"]}, indent=1))
     log.info("done %s in %.0fs", tag, res["wall_seconds"])
 
 
