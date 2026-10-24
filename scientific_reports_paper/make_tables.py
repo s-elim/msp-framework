@@ -198,6 +198,10 @@ def main() -> None:
 
     # FoundationPose strata and pose payload (fp_analysis.py)
     fa = load("fp_analysis.json")
+    for k, w in (("ensemble5_s0-4 - fpose_plan", "SelEnsFp"), ("direct_s0 - fpose_plan", "SelDirFp")):
+        v = fa["sel25"][k]
+        add(w + "Diff", f"{v['diff']:+.3f}")
+        add(w + "Ci", f"[{v['ci95'][0]:+.3f}, {v['ci95'][1]:+.3f}]")
     hb = fa["fp_add_err_bins"]["[0.05, 0.1) d"]
     lb = fa["fp_add_err_bins"]["[0, 0.02) d"]
     add("FpBinHiN", str(hb["n"]))
