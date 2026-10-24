@@ -312,7 +312,18 @@ def fig3_pose_noise() -> None:
         ax.scatter(d["add_01d"].mean(1), d["top1_success"].mean(1), marker=mk, s=14,
                    facecolor="white" if kind == "rot" else C_POSE, edgecolor=C_POSE, lw=0.9,
                    label="rotation noise" if kind == "rot" else "translation noise", zorder=3)
-    ax.plot([0, 1], [0, gt], color=OK["grey"], lw=0.6, ls=":")
+    fp = m["plan"].get("fpose_p4")
+    if fp:
+        ax.scatter(fp["add_01d"], fp["top1_success"], marker="D", s=22, color=OK["verm"],
+                   zorder=4, label="FoundationPose")
+    if "plan:pose_p4" in m["groups"]:
+        ax.errorbar(m["groups"]["pose"]["add_01d"]["mean"],
+                    m["groups"]["plan:pose_p4"]["top1_success"]["mean"],
+                    xerr=m["groups"]["pose"]["add_01d"]["sd"],
+                    yerr=m["groups"]["plan:pose_p4"]["top1_success"]["sd"], fmt="^",
+                    ms=4.5, color=OK["yellow"], mec="black", mew=0.5, lw=0.7, zorder=4,
+                    label="pose regressor")
+    ax.scatter([1.0], [gt], marker="*", s=40, color="black", zorder=4, label="exact pose")
     ax.set_xlabel("ADD(-S) < 0.1d pass rate")
     ax.set_ylabel("Grasp success (top-1)")
     ax.set_xlim(0, 1.03)

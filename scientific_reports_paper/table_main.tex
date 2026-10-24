@@ -1,0 +1,11 @@
+\textcolor{famlearn}{Grasp-patch CNN, Dex-Net 2.0 architecture (n=5)} & 0.637 $\pm$ 0.013 & 0.829 $\pm$ 0.005 & 0.902 $\pm$ 0.017 & 0.611 & 0.831 \\
+\textcolor{famlearn}{MSP, stochastic code ($\beta=300$) (n=5)} & 0.650 $\pm$ 0.008 & 0.855 $\pm$ 0.004 & 0.898 $\pm$ 0.013 & 0.487 & 0.867 \\
+\textcolor{famlearn}{MSP, deterministic code (n=5)} & 0.683 $\pm$ 0.006 & 0.876 $\pm$ 0.001 & \second 0.929 $\pm$ 0.007 & 0.647 & 0.857 \\
+\textcolor{famlearn}{MSP, deterministic code, ensemble of 5 (n=3)} & 0.705 $\pm$ 0.006 & \second 0.891 $\pm$ 0.002 & \best 0.938 $\pm$ 0.006 & \second 0.664 & \second 0.884 \\
+\midrule
+\textcolor{fampose}{Pose regressor + planner (n=5)} & \second 0.707 $\pm$ 0.007 & 0.859 $\pm$ 0.003 & 0.817 $\pm$ 0.015 & 0.000 & n/a \\
+\textcolor{fampose}{FoundationPose + planner} & \best 0.791 & \best 0.935 & 0.902 & \best 0.844 & \best 0.904 \\
+\midrule
+\textcolor{famref}{Annotated pose + planner (privileged)} & 0.856 & 0.990 & 0.984 & 0.854 & 0.974 \\
+\textcolor{famref}{Random candidate} & 0.266 & 0.500 & 0.266 & - & - \\
+\textcolor{famref}{Oracle (any successful candidate)} & 0.877 & 1.000 & 1.000 & - & - \\

@@ -42,6 +42,21 @@ def macro(name: str, val: str) -> str:
     return f"\\newcommand{{\\{name}}}{{{val}}}"
 
 
+def payload_macros(rm, rd, add) -> None:
+    b300 = [v for k, v in rm.items() if k.startswith("msp_b300_d32")]
+    dirs = list(rd.values())
+    names = {4: "Four", 16: "Sixteen", 32: "ThirtyTwo", 64: "SixtyFour"}
+    for lab, runs in (("MSP", b300), ("Direct", dirs)):
+        for bud in (4, 16, 32, 64):
+            add(f"Pay{lab}At{names[bud]}",
+                f3(np.mean([frontier_at(r["rows"], bud) for r in runs])))
+        full = np.mean([max(x["top1_success"] for x in r["rows"]) for r in runs])
+        add(f"Pay{lab}Full", f3(full))
+        need = [bits_to_reach(r["rows"], 0.99 * max(x["top1_success"] for x in r["rows"]))
+                for r in runs]
+        add(f"Pay{lab}NinetyNine", f"{np.mean(need):.0f}")
+
+
 def frontier_at(rows: list[dict], budget: float) -> float:
     ok = [r["top1_success"] for r in rows if r["payload_bits"] <= budget]
     return max(ok) if ok else float("nan")
@@ -142,18 +157,12 @@ def main() -> None:
     add("NoiseSatDrop", f"{plan['gt_p4']['top1_success'] - min(sat)[0]:.3f}")
 
     # payload
-    rm, rd = load("rate_dims_msp.json"), load("rate_dims_direct.json")
-    b300 = [v for k, v in rm.items() if k.startswith("msp_b300_d32")]
-    dirs = list(rd.values())
-    for lab, runs in (("MSP", b300), ("Direct", dirs)):
-        for bud in (4, 16, 32, 64):
-            add(f"Pay{lab}At{ {4: 'Four', 16: 'Sixteen', 32: 'ThirtyTwo', 64: 'SixtyFour'}[bud]}",
-                f3(np.mean([frontier_at(r["rows"], bud) for r in runs])))
-        full = np.mean([max(x["top1_success"] for x in r["rows"]) for r in runs])
-        add(f"Pay{lab}Full", f3(full))
-        need = [bits_to_reach(r["rows"], 0.99 * max(x["top1_success"] for x in r["rows"]))
-                for r in runs]
-        add(f"Pay{lab}NinetyNine", f"{np.mean(need):.0f}")
+    if (R / "rate_dims_msp.json").exists():
+        payload_macros(load("rate_dims_msp.json"), load("rate_dims_direct.json"), add)
+    else:
+        for k in ("PayMSPAtSixteen", "PayMSPAtThirtyTwo", "PayDirectAtSixteen",
+                  "PayDirectAtThirtyTwo", "PayDirectNinetyNine", "PayDirectFull"):
+            add(k, "\\textbf{[pending]}")
     # beta sweep
     for b in (1, 10, 100, 300, 1000):
         key = f"msp_b{b}_d32"
@@ -166,7 +175,7 @@ def main() -> None:
     for d, w in ((8, "Eight"), (64, "SixtyFour")):
         key = f"msp_b300_d{d}"
         if key in g:
-            add(f"LatTop{w}", pm(g[key]["top1_success"]))
+            add(f"LatentTop{w}", pm(g[key]["top1_success"]))
 
     # unseen objects
     ho = {k: g[k] for k in g if "_ho" in k}
@@ -229,39 +238,55 @@ def main() -> None:
 
 def write_tables(m: dict) -> None:
     g, plan = m["groups"], m["plan"]
-    rows = []
+    keys = ("top1_success", "within_scene_auc", "selective_25",
+            "cert_0.1_certified_fraction", "cert_0.1_certified_precision")
+    rows = []  # (label, family, values[mean], strings, ranked?)
 
-    def row(label, top, auc, sel, cf, cp, extra=""):
-        rows.append(f"{label} & {top} & {auc} & {sel} & {cf} & {cp}{extra} \\\\")
-
-    for grp, lab in (("gqcnn", "Grasp-patch CNN (Dex-Net 2.0 architecture)"),
-                     ("msp_b300_d32", "MSP, stochastic code ($\\beta=300$)"),
-                     ("direct", "Outcome scorer, deterministic code"),
-                     ("ensemble5", "Deep ensemble of 5 outcome scorers")):
+    def grp_row(grp, lab, fam):
         x = g[grp]
-        row(f"{lab} (n={x['n_seeds']})", pm(x["top1_success"]), pm(x["within_scene_auc"]),
-            pm(x["selective_25"]), f3(x["cert_0.1_certified_fraction"]["mean"]),
-            f3(x["cert_0.1_certified_precision"]["mean"]))
-    rows.append("\\midrule")
+        vals = [x[k]["mean"] for k in keys]
+        strs = [pm(x[k]) for k in keys[:3]] + [f3(x[k]["mean"]) if np.isfinite(x[k]["mean"])
+                                               else "n/a" for k in keys[3:]]
+        rows.append((f"{lab} (n={x['n_seeds']})", fam, vals, strs, True))
+
+    def plan_row(key, lab, fam, ranked):
+        x = plan[key]
+        c = x.get("cert_0.1", {})
+        vals = [x["top1_success"], x["within_scene_auc"], x["selective_25"],
+                c.get("certified_fraction", np.nan), c.get("certified_precision", np.nan)]
+        rows.append((lab, fam, vals, [f3(v) if np.isfinite(v) else "n/a" for v in vals],
+                     ranked))
+
+    grp_row("gqcnn", "Grasp-patch CNN, Dex-Net 2.0 architecture", "famlearn")
+    grp_row("msp_b300_d32", "MSP, stochastic code ($\\beta=300$)", "famlearn")
+    grp_row("direct", "MSP, deterministic code", "famlearn")
+    grp_row("ensemble5", "MSP, deterministic code, ensemble of 5", "famlearn")
     if "plan:pose_p4" in g:
-        x = g["plan:pose_p4"]
-        row(f"Pose regressor + planner (n={x['n_seeds']})", pm(x["top1_success"]),
-            pm(x["within_scene_auc"]), pm(x["selective_25"]),
-            f3(x["cert_0.1_certified_fraction"]["mean"]),
-            f3(x["cert_0.1_certified_precision"]["mean"]))
-    for key, lab in (("fpose_p4", "FoundationPose + planner"),
-                     ("gt_p4", "Ground-truth pose + planner (privileged)")):
-        if key in plan:
-            x = plan[key]
-            c = x.get("cert_0.1", {})
-            row(lab, f3(x["top1_success"]), f3(x["within_scene_auc"]), f3(x["selective_25"]),
-                f3(c.get("certified_fraction", float("nan"))),
-                f3(c.get("certified_precision", float("nan"))))
+        grp_row("plan:pose_p4", "Pose regressor + planner", "fampose")
+    if "fpose_p4" in plan:
+        plan_row("fpose_p4", "FoundationPose + planner", "fampose", True)
+    plan_row("gt_p4", "Exact pose + planner (privileged)", "famref", False)
+    vals = np.array([r[2] for r in rows], float)
+    ranked = np.array([r[4] for r in rows])
+    marks = [["" for _ in keys] for _ in rows]
+    for j in range(len(keys)):
+        v = np.where(ranked & np.isfinite(vals[:, j]), vals[:, j], -np.inf)
+        order = np.argsort(-v)
+        marks[order[0]][j] = "\\best "
+        if np.isfinite(v[order[1]]):
+            marks[order[1]][j] = "\\second "
+    out = []
+    for i, (lab, fam, _, strs, _) in enumerate(rows):
+        if i == 4 or (fam == "famref" and rows[i - 1][1] != "famref"):
+            out.append("\\midrule")
+        cells = " & ".join(marks[i][j] + strs[j] for j in range(len(keys)))
+        out.append(f"\\textcolor{{{fam}}}{{{lab}}} & {cells} \\\\")
     te = m["corpus"]["test"]
-    rows.append("\\midrule")
-    rows.append(f"Random candidate & {f3(te['random_top1'])} & 0.500 & - & - & - \\\\")
-    rows.append(f"Oracle (best candidate) & {f3(te['oracle_any_success'])} & 1.000 & - & - & - \\\\")
-    (OUT / "table_main.tex").write_text("\n".join(rows) + "\n")
+    out.append(f"\\textcolor{{famref}}{{Random candidate}} & {f3(te['random_top1'])} & 0.500 & "
+               f"{f3(te['random_top1'])} & - & - \\\\")
+    out.append(f"\\textcolor{{famref}}{{Oracle (any successful candidate)}} & "
+               f"{f3(te['oracle_any_success'])} & 1.000 & 1.000 & - & - \\\\")
+    (OUT / "table_main.tex").write_text("\n".join(out) + "\n")
 
     import torch
 
@@ -270,8 +295,8 @@ def write_tables(m: dict) -> None:
     held = (1, 6, 9, 15)
     w = np.array([(obj == o).sum() for o in held], float)
     urows = []
-    for base, lab in (("gqcnn", "Grasp-patch CNN"), ("msp_b300_d32", "MSP ($\\beta=300$)"),
-                      ("direct", "Outcome scorer")):
+    for base, lab in (("gqcnn", "Grasp-patch CNN"), ("msp_b300_d32", "MSP, stochastic"),
+                      ("direct", "MSP, deterministic")):
         k = f"{base}_ho1-6-9-15"
         if k not in g or base not in g:
             continue
