@@ -38,6 +38,7 @@ from msp.models.lm_baselines import GraspPatchCNN, PoseRegressor, grasp_patches 
 from msp.utils.seed import seed_everything  # noqa: E402
 
 log = logging.getLogger("train_lm")
+DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 T_SCALE = 10.0  # action translation in decimetres, so all 9 action coordinates are O(1)
 
 
@@ -74,6 +75,33 @@ def load_split(name: str, data: Path, holdout: set[int], unseen: bool) -> LMGras
     return LMGrasp(data / f"{name}.pt", keep=keep)
 
 
+@torch.no_grad()
+def score_split(enc, head, ds, direct: bool, k: int = 32) -> dict:
+    was = enc.training
+    enc.eval()
+    head.eval()
+    torch.manual_seed(1234)
+    mus, lvs, ss, vs = [], [], [], []
+    for i in range(0, len(ds), 128):
+        obs = ds.b["obs"][i:i + 128].float().to(DEV)
+        act = ds.actions[i:i + 128].to(DEV)
+        bel = enc(obs)
+        z = bel.mu.unsqueeze(1) if direct else bel.rsample(k)
+        p = head.success_probs(z, act)  # (B, K, Na)
+        mus.append(bel.mu.cpu())
+        lvs.append(bel.logvar.cpu())
+        ss.append(p.mean(1).cpu())
+        vs.append(p.var(1, unbiased=False).cpu())
+    enc.train(was)
+    head.train(was)
+    return {"s": torch.cat(ss), "v": torch.cat(vs), "mu": torch.cat(mus),
+            "logvar": torch.cat(lvs)}
+
+
+def bce_of(s: torch.Tensor, y: torch.Tensor) -> float:
+    return float(F.binary_cross_entropy(s.clamp(1e-6, 1 - 1e-6), y.float()))
+
+
 # ----------------------------------------------------------------------------- MSP / direct
 def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=a.latent)
@@ -86,45 +114,36 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
                       out_dir=str(out), seed=a.seed, train_samples=8,
                       kl_warmup_epochs=15,
                       deterministic_warmup_epochs=(a.epochs + 1) if direct else 10)
-    tr = Trainer(enc, head, dl["train"], dl["val"], cfg, torch.device("cpu"))
+    tr = Trainer(enc, head, dl["train"], dl["val"], cfg, DEV)
     hist = []
+    best, best_state = math.inf, None
     while tr.epoch < cfg.epochs:
         t0 = time.time()
         m = tr.train_epoch() | tr.validate()
-        key = m.get("val/loss/total", math.inf)
-        if not direct and key < tr.best_val:
-            tr.best_val = key
+        # Model selection, identical in kind for every method: the validation success BCE of
+        # the method's OWN decision score (MSP: posterior-mean probability over K = 8 draws;
+        # direct: probability at z = mu).
+        sv = score_split(enc, head, dsets["val"], direct, k=8)["s"]
+        bce = bce_of(sv, dsets["val"].b["succ"])
+        m["val/select_bce"] = bce
+        if bce < best:
+            best = bce
+            best_state = ({k: v.detach().clone() for k, v in enc.state_dict().items()},
+                          {k: v.detach().clone() for k, v in head.state_dict().items()})
             tr.save("best.pth")
         m["epoch"], m["sec"] = tr.epoch, time.time() - t0
         hist.append(m)
-        log.info("ep %d %.0fs train %.4f val %.4f rate %.3f", tr.epoch, m["sec"],
-                 m.get("loss/total", float("nan")), key, m.get("val/rate", float("nan")))
+        log.info("ep %d %.0fs train %.4f val %.4f rate %.3f sel-bce %.4f", tr.epoch, m["sec"],
+                 m.get("loss/total", float("nan")), m.get("val/loss/total", float("nan")),
+                 m.get("val/loss/rate_kl", float("nan")), bce)
         tr.epoch += 1
     tr.save("last.pth")
-    if not direct and (out / "best.pth").exists():
-        tr.load(out / "best.pth", weights_only=True)
-    enc.eval()
-    head.eval()
-    scores = {}
-    with torch.no_grad():
-        for split in ("val", "calib", "test"):
-            ds = dsets[split]
-            mus, lvs, ss, vs = [], [], [], []
-            for i in range(0, len(ds), 128):
-                idx = range(i, min(i + 128, len(ds)))
-                obs = torch.stack([ds[j]["observation"] for j in idx])
-                act = ds.actions[i:i + len(idx)]
-                bel = enc(obs)
-                if direct:
-                    p = head.success_probs(bel.mu.unsqueeze(1), act)  # (B, 1, Na)
-                else:
-                    p = head.success_probs(bel.rsample(32), act)  # (B, K, Na)
-                mus.append(bel.mu)
-                lvs.append(bel.logvar)
-                ss.append(p.mean(1))
-                vs.append(p.var(1, unbiased=False))
-            scores[split] = {"s": torch.cat(ss), "v": torch.cat(vs), "mu": torch.cat(mus),
-                             "logvar": torch.cat(lvs)}
+    enc.load_state_dict(best_state[0])
+    head.load_state_dict(best_state[1])
+    scores = {split: score_split(enc, head, dsets[split], direct, k=32)
+              for split in ("val", "calib", "test")}
+    log.info("selected epoch %d (val BCE %.4f)",
+             int(np.argmin([h["val/select_bce"] for h in hist])), best)
     return {"scores": scores, "history": hist}
 
 
@@ -155,11 +174,13 @@ def pose_loss(Rh, dth, R, dt, obj, syms) -> torch.Tensor:
 
 def train_pose(a, dsets, out: Path) -> dict:
     syms = symmetries(REPO / "data/lm")
-    net = PoseRegressor(pretrained=True)
+    net = PoseRegressor(pretrained=True).to(DEV)
+    syms = {k: v.to(DEV) for k, v in syms.items()}
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     tr = dsets["train"]
     n = len(tr)
     hist = []
+    best, best_state = math.inf, None
     for ep in range(a.epochs):
         lr = a.lr * (0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * ep / a.epochs)))
         for g in opt.param_groups:
@@ -169,9 +190,9 @@ def train_pose(a, dsets, out: Path) -> dict:
         tot, t0 = 0.0, time.time()
         for i in range(0, n - a.batch + 1, a.batch):
             j = perm[i:i + a.batch]
-            obs = tr.b["obs"][j].float()
-            R = tr.b["R"][j]
-            dt = tr.b["t"][j] - tr.b["c"][j]
+            obs = tr.b["obs"][j].float().to(DEV)
+            R = tr.b["R"][j].to(DEV)
+            dt = (tr.b["t"][j] - tr.b["c"][j]).to(DEV)
             Rh, dth = net(obs)
             loss = pose_loss(Rh, dth, R, dt, tr.b["obj_id"][j], syms)
             opt.zero_grad(set_to_none=True)
@@ -179,8 +200,21 @@ def train_pose(a, dsets, out: Path) -> dict:
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
             tot += float(loss) * len(j)
-        hist.append({"epoch": ep, "loss": tot / n, "sec": time.time() - t0})
-        log.info("pose ep %d loss %.4f %.0fs", ep, tot / n, time.time() - t0)
+        net.eval()
+        with torch.no_grad():
+            va = dsets["val"]
+            vl = []
+            for i in range(0, len(va), 128):
+                Rh, dth = net(va.b["obs"][i:i + 128].float().to(DEV))
+                vl.append(float(pose_loss(Rh, dth, va.b["R"][i:i + 128].to(DEV),
+                                          (va.b["t"][i:i + 128] - va.b["c"][i:i + 128]).to(DEV),
+                                          va.b["obj_id"][i:i + 128], syms)) * len(Rh))
+            vloss = sum(vl) / len(va)
+        if vloss < best:
+            best, best_state = vloss, {k: v.detach().clone() for k, v in net.state_dict().items()}
+        hist.append({"epoch": ep, "loss": tot / n, "val_loss": vloss, "sec": time.time() - t0})
+        log.info("pose ep %d loss %.4f val %.4f %.0fs", ep, tot / n, vloss, time.time() - t0)
+    net.load_state_dict(best_state)
     torch.save(net.state_dict(), out / "pose.pth")
     net.eval()
     scores = {}
@@ -189,27 +223,28 @@ def train_pose(a, dsets, out: Path) -> dict:
             ds = dsets[split]
             Rs, ts = [], []
             for i in range(0, len(ds), 128):
-                Rh, dth = net(ds.b["obs"][i:i + 128].float())
-                Rs.append(Rh)
-                ts.append(ds.b["c"][i:i + 128] + dth)
+                Rh, dth = net(ds.b["obs"][i:i + 128].float().to(DEV))
+                Rs.append(Rh.cpu())
+                ts.append(ds.b["c"][i:i + 128] + dth.cpu())
             scores[split] = {"R_hat": torch.cat(Rs), "t_hat": torch.cat(ts)}
     return {"scores": scores, "history": hist}
 
 
 # ----------------------------------------------------------------------------- GQ-CNN
 def _patches(ds, idx):
-    depth = ds.b["obs"][idx, 3:4].float()
-    return grasp_patches(depth, ds.b["T"][idx], ds.b["K"][idx], ds.b["crop"][idx],
-                         ds.b["c"][idx])
+    depth = ds.b["obs"][idx, 3:4].float().to(DEV)
+    return grasp_patches(depth, ds.b["T"][idx].to(DEV), ds.b["K"][idx].to(DEV),
+                         ds.b["crop"][idx].to(DEV), ds.b["c"][idx].float().to(DEV))
 
 
 def train_gqcnn(a, dsets, out: Path) -> dict:
-    net = GraspPatchCNN(scalar_dim=4)
+    net = GraspPatchCNN(scalar_dim=4).to(DEV)
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     tr = dsets["train"]
     n = len(tr)
     bs = max(8, a.batch // 2)
     hist = []
+    best, best_state = math.inf, None
     for ep in range(a.epochs):
         net.train()
         perm = torch.randperm(n)
@@ -217,27 +252,36 @@ def train_gqcnn(a, dsets, out: Path) -> dict:
         for i in range(0, n - bs + 1, bs):
             j = perm[i:i + bs]
             xp, xs = _patches(tr, j)
-            y = tr.b["succ"][j].reshape(-1)
+            y = tr.b["succ"][j].reshape(-1).to(DEV)
             loss = F.binary_cross_entropy_with_logits(net(xp, xs), y)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
             tot += float(loss) * len(j)
-        hist.append({"epoch": ep, "loss": tot / n, "sec": time.time() - t0})
-        log.info("gqcnn ep %d loss %.4f %.0fs", ep, tot / n, time.time() - t0)
+        sv = gq_scores(net, dsets["val"])
+        vb = bce_of(sv, dsets["val"].b["succ"])
+        if vb < best:
+            best, best_state = vb, {k: v.detach().clone() for k, v in net.state_dict().items()}
+        hist.append({"epoch": ep, "loss": tot / n, "val_bce": vb, "sec": time.time() - t0})
+        log.info("gqcnn ep %d loss %.4f val %.4f %.0fs", ep, tot / n, vb, time.time() - t0)
+    net.load_state_dict(best_state)
     torch.save(net.state_dict(), out / "gqcnn.pth")
     net.eval()
-    scores = {}
-    with torch.no_grad():
-        for split in ("val", "calib", "test"):
-            ds = dsets[split]
-            ss = []
-            for i in range(0, len(ds), 64):
-                j = torch.arange(i, min(i + 64, len(ds)))
-                xp, xs = _patches(ds, j)
-                ss.append(torch.sigmoid(net(xp, xs)).reshape(len(j), -1))
-            scores[split] = {"s": torch.cat(ss)}
+    scores = {split: {"s": gq_scores(net, dsets[split])} for split in ("val", "calib", "test")}
     return {"scores": scores, "history": hist}
+
+
+@torch.no_grad()
+def gq_scores(net, ds) -> torch.Tensor:
+    was = net.training
+    net.eval()
+    ss = []
+    for i in range(0, len(ds), 64):
+        j = torch.arange(i, min(i + 64, len(ds)))
+        xp, xs = _patches(ds, j)
+        ss.append(torch.sigmoid(net(xp, xs)).reshape(len(j), -1).cpu())
+    net.train(was)
+    return torch.cat(ss)
 
 
 def main() -> None:
@@ -246,7 +290,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--beta", type=float, default=300.0)
     ap.add_argument("--latent", type=int, default=32)
-    ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--threads", type=int, default=12)
@@ -280,6 +324,7 @@ def main() -> None:
         res = train_gqcnn(a, dsets, out)
     res["args"] = vars(a)
     res["wall_seconds"] = time.time() - t0
+    res["device"] = str(DEV)
     res["split_index"] = {k: {"obj_id": v.b["obj_id"], "im_id": v.b["im_id"]}
                           for k, v in dsets.items() if k != "train"}
     torch.save(res, out / "scores.pt")

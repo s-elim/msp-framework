@@ -175,6 +175,8 @@ def add_metrics(Rh, th, R, t, obj, pts, diam) -> dict:
 def agg(rows: list[dict], keys: tuple[str, ...]) -> dict:
     out = {"n_seeds": len(rows)}
     for k in keys:
+        if k not in rows[0]:
+            continue
         v = np.array([r[k] for r in rows], float)
         out[k] = {"mean": float(np.nanmean(v)), "sd": float(np.nanstd(v, ddof=1)) if len(v) > 1
                   else float("nan"), "values": v.tolist()}
@@ -275,9 +277,12 @@ def main() -> None:
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(res, indent=1, default=float))
     for g, o in sorted(res["groups"].items()):
-        print(f"{g:40s} n={o['n_seeds']} within {o['within_scene_auc']['mean']:.3f}"
-              f"+-{o['within_scene_auc']['sd']:.3f} top1 {o['top1_success']['mean']:.3f}"
-              f" sel25 {o['selective_25']['mean']:.3f}")
+        if "within_scene_auc" in o:
+            print(f"{g:40s} n={o['n_seeds']} within {o['within_scene_auc']['mean']:.3f}"
+                  f"+-{o['within_scene_auc']['sd']:.3f} top1 {o['top1_success']['mean']:.3f}"
+                  f" sel25 {o['selective_25']['mean']:.3f}")
+        if "add_01d" in o:
+            print(f"{g:40s} n={o['n_seeds']} ADD(-S)<0.1d {o['add_01d']['mean']:.3f}")
 
 
 if __name__ == "__main__":
