@@ -1,0 +1,6 @@
+--method direct --points 3d --design --seed 0
+--method direct --points 3d --design --seed 1
+--method direct --points 3d --design --seed 2
+--method direct --points 3d --planner fpose --design --seed 0
+--method direct --points 3d --planner fpose --design --seed 1
+--method direct --points 3d --planner fpose --design --seed 2

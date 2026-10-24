@@ -38,6 +38,7 @@ from msp.math.bottleneck import BetaSchedule, distortion, vib_objective  # noqa:
 from msp.types import Outcome  # noqa: E402
 from msp.models import BeliefEncoder, OutcomeHead, ResNetBackbone  # noqa: E402
 from msp.models.lm_baselines import GraspPatchCNN, PoseRegressor, grasp_patches  # noqa: E402
+from msp.models.points import PointBeliefEncoder  # noqa: E402
 from msp.utils.seed import seed_everything  # noqa: E402
 
 log = logging.getLogger("train_lm")
@@ -70,9 +71,48 @@ def augment(obs: torch.Tensor, g: torch.Generator | None = None) -> torch.Tensor
 
 
 PLAN = REPO / "results/sr/plan"
+N_CUR_4D = 1024  # current-frame points in the 4D cloud; the two context frames add 512 each
+
+
+def load_points(path: Path, b: dict, keep: torch.Tensor | None, mode: str) -> torch.Tensor:
+    """Study 6 point clouds (N, 2048, 7) float16 [x, y, z (dm, camera frame, minus c), t, rgb]
+    from data/lm_grasp/points_<split>.pt (scripts/sr/build_points.py).
+
+    3d: the 2048 current-frame points, t = 0. 4d: 1024 current-frame points plus the two
+    registered context frames (512 each, t = frame offset / 10); a missing context frame is
+    replaced by further current-frame points (t = 0), so every scene has the same budget."""
+    P = torch.load(path.parent / f"points_{path.stem}.pt", map_location="cpu",
+                   weights_only=False)
+    oid = P["obj_id"] if keep is None else P["obj_id"][keep]
+    iid = P["im_id"] if keep is None else P["im_id"][keep]
+    assert torch.equal(oid, b["obj_id"]) and torch.equal(iid, b["im_id"]), \
+        f"{path.stem}: point clouds are not aligned with the corpus rows"
+    cur, ctx = P["cur"].float(), P["ctx"].float()
+    dt, ok = P["ctx_dt"].float(), P["ctx_ok"]
+    if keep is not None:
+        cur, ctx, dt, ok = cur[keep], ctx[keep], dt[keep], ok[keep]
+    zeros = torch.zeros((*cur.shape[:2], 1))
+    if mode == "3d":
+        pts = torch.cat([cur[..., :3] * T_SCALE, zeros, cur[..., 3:]], -1)
+    elif mode == "4d":
+        parts = [torch.cat([cur[:, :N_CUR_4D, :3] * T_SCALE, zeros[:, :N_CUR_4D],
+                            cur[:, :N_CUR_4D, 3:]], -1)]
+        for k in range(2):
+            fill = cur[:, N_CUR_4D + 512 * k: N_CUR_4D + 512 * (k + 1)]
+            src = torch.where(ok[:, k, None, None], ctx[:, k], fill)
+            t = torch.where(ok[:, k], dt[:, k] / 10.0, torch.zeros_like(dt[:, k]))
+            parts.append(torch.cat([src[..., :3] * T_SCALE,
+                                    t[:, None, None].expand(-1, src.shape[1], 1),
+                                    src[..., 3:]], -1))
+        pts = torch.cat(parts, 1)
+    else:
+        raise ValueError(f"unknown points mode {mode!r}")
+    return pts.half()
 
 
 class LMGrasp(Dataset):
+    points_mode = ""  # study 6: "", "3d" or "4d"; set once in main() from --points
+
     def __init__(self, path: Path, keep: torch.Tensor | None = None, train: bool = False,
                  teacher: torch.Tensor | None = None, alpha: float = 0.0,
                  planner: str = "", aux: torch.Tensor | None = None) -> None:
@@ -98,6 +138,7 @@ class LMGrasp(Dataset):
             a = torch.cat([a, (2 * ps - 1)[..., None]], -1)
         self.actions = a
         self.n = b["obs"].shape[0]
+        self.pts = load_points(path, b, keep, self.points_mode) if self.points_mode else None
 
     def __len__(self) -> int:
         return self.n
@@ -111,10 +152,16 @@ class LMGrasp(Dataset):
         y = b["succ"][i].float()
         soft = y if self.teacher is None else (1 - self.alpha) * y + self.alpha * self.teacher[i]
         margin = torch.zeros(na, 1) if self.aux is None else self.aux[i][:, None]
-        return {"observation": obs, "actions": self.actions[i],
+        item = {"observation": obs, "actions": self.actions[i],
                 "weights": torch.ones(na) / na, "succ": soft[:, None], "succ_hard": y,
                 "margin": margin, "slip": b["slip"][i][:, None],
                 "index": torch.tensor(i)}
+        if self.pts is not None:
+            p = self.pts[i].float()
+            if self.train:  # 2 mm point jitter, the point analogue of `augment`'s depth noise
+                p[:, :3] += 0.02 * torch.randn(p.shape[0], 3)
+            item["points"] = p
+        return item
 
 
 TEACHER = REPO / "results/sr/teacher/train_direct_s5-14.pt"
@@ -208,7 +255,12 @@ def score_split(enc, head, ds, direct: bool, k: int = 32) -> dict:
     for i in range(0, len(ds), 128):
         obs = ds.b["obs"][i:i + 128].float().to(DEV)
         act = ds.actions[i:i + 128].to(DEV)
-        bel = enc(obs)
+        if ds.pts is not None:  # study 6: RGB-D crop + point cloud
+            pts = ds.pts[i:i + 128].float().to(DEV)
+            bel = enc(obs, pts)
+            act = enc.grasp_features(pts, act)
+        else:
+            bel = enc(obs)
         z = bel.mu.unsqueeze(1) if direct else bel.rsample(k)
         p = head.success_probs(z, act)  # (B, K, Na)
         mus.append(bel.mu.cpu())
@@ -242,14 +294,22 @@ class LMTrainer(Trainer):
     rank_w: float = 0.0
 
     def _forward(self, batch):
-        if self.rank_w <= 0 or not self.encoder.training:
+        pts = batch.get("points")
+        ranked = self.rank_w > 0 and self.encoder.training
+        if pts is None and not ranked:
             return super()._forward(batch)
-        # one forward pass shared by the VIB terms and the ranking term (parent logic inlined)
+        # one forward pass shared by the VIB terms and the ranking term (parent logic inlined;
+        # amp is off for every LM-Grasp run, so the parent's autocast is a no-op)
         obs = batch["observation"].to(self.device)
         act = batch["actions"].to(self.device)
         y = Outcome(succ=batch["succ"].to(self.device), margin=batch["margin"].to(self.device),
                     slip=batch["slip"].to(self.device))
-        bel = self.encoder(obs)
+        if pts is not None:  # study 6: RGB-D crop + point cloud, local features per candidate
+            pts = pts.to(self.device)
+            bel = self.encoder(obs, pts)
+            act = self.encoder.grasp_features(pts, act)
+        else:
+            bel = self.encoder(obs)
         z = bel.mu.unsqueeze(1) if self._deterministic_now() else bel.rsample(
             self.cfg.train_samples)
         pred = self.head(z, act)
@@ -257,6 +317,8 @@ class LMTrainer(Trainer):
                               bel.logvar.float(), self.cfg.beta,
                               weights=batch["weights"].to(self.device),
                               rate_weight=self._rate_weight_at(self.epoch))
+        if not ranked:
+            return terms
         p = torch.sigmoid(pred.succ_logit.float()).squeeze(-1).mean(1).clamp(1e-6, 1 - 1e-6)
         rl = pairwise_rank_loss(torch.log(p) - torch.log1p(-p),
                                 batch["succ_hard"].to(self.device))
@@ -265,9 +327,14 @@ class LMTrainer(Trainer):
 
 # ----------------------------------------------------------------------------- MSP / direct
 def train_msp(a, dsets, out: Path, direct: bool) -> dict:
-    enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True), latent_dim=a.latent)
-    head = OutcomeHead(latent_dim=a.latent, action_dim=dsets["train"].actions.shape[-1],
-                       gripper_dim=0, hidden=256)
+    act_dim = dsets["train"].actions.shape[-1]
+    if a.points:  # study 6
+        enc = PointBeliefEncoder(latent_dim=a.latent)
+        act_dim += enc.local.output_dim
+    else:
+        enc = BeliefEncoder(ResNetBackbone(output_dim=256, pretrained=True),
+                            latent_dim=a.latent)
+    head = OutcomeHead(latent_dim=a.latent, action_dim=act_dim, gripper_dim=0, hidden=256)
     dl = {k: DataLoader(v, batch_size=a.batch, shuffle=(k == "train"), collate_fn=collate,
                         num_workers=0, drop_last=(k == "train"))
           for k, v in dsets.items() if k in ("train", "val")}
@@ -573,6 +640,9 @@ def main() -> None:
     ap.add_argument("--holdout", default="", help="comma-separated obj ids held out of training")
     ap.add_argument("--data", default=str(REPO / "data/lm_grasp"))
     ap.add_argument("--tag", default="")
+    ap.add_argument("--points", default="", choices=["", "3d", "4d"],
+                    help="study 6: add a point-cloud branch (3d: current frame; 4d: + two "
+                         "registered frames with their frame offset as t)")
     a = ap.parse_args()
     if a.make_teacher:
         logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
@@ -586,6 +656,9 @@ def main() -> None:
         ap.error("--vlm-mix-ens needs --distill and no --holdout (the ensemble saw every object)")
     if (a.vlm_aux > 0 or a.vlm_control) and not a.vlm_labels:
         ap.error("--vlm-aux/--vlm-control need --vlm-labels")
+    if a.points and a.method not in ("msp", "direct"):
+        ap.error("--points is implemented for --method msp/direct")
+    LMGrasp.points_mode = a.points
     if a.epochs <= SELECT_FROM:
         ap.error(f"--epochs must exceed SELECT_FROM={SELECT_FROM}")
     torch.set_num_threads(a.threads)
@@ -610,6 +683,7 @@ def main() -> None:
     variant = (vl + (f"_rank{a.rank:g}" if a.rank else "")
                + (f"_kd{a.distill:g}" if a.distill and not a.vlm_labels else "")
                + (f"_pl{a.planner}" if a.planner else "")
+               + (f"_pts{a.points}" if a.points else "")
                + (f"_lam{a.lam:g}" if a.method == "qcode" else ""))
     tag = a.tag or (f"{a.method}" + (f"_b{a.beta:g}_d{a.latent}" if a.method == "msp" else "")
                     + variant

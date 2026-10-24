@@ -1,0 +1,7 @@
+--method direct --planner fposeU1_s0 --seed 0
+--method direct --planner fposeU1_s0 --seed 1
+--method direct --planner fposeU1_s0 --seed 2
+--method direct --planner fposeU1_s0 --seed 3
+--method direct --planner fposeU1_s0 --seed 4
+--method msp --beta 300 --latent 32 --planner fpose --seed 0
+--method msp --beta 300 --latent 32 --planner fpose --seed 1

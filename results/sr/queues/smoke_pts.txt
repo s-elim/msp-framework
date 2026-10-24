@@ -1,0 +1,1 @@
+--method direct --points 4d --planner fpose --design --epochs 6 --tag smoke_pts4d

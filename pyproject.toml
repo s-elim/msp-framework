@@ -45,7 +45,7 @@ disallow_any_explicit = false
 plugins = []
 
 [[tool.mypy.overrides]]
-module = ["torch.*", "torchvision.*", "h5py.*", "wandb.*", "mujoco.*"]
+module = ["torch.*", "torchvision.*", "h5py.*", "wandb.*", "mujoco.*", "scipy.*", "trimesh.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

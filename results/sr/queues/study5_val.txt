@@ -1,0 +1,1 @@
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/twoview_s0_val.npz --split val --tag fposeTV_s0_p4 --workers 16

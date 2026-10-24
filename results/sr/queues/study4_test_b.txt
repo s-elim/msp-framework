@@ -1,0 +1,2 @@
+--pose results/sr/runs/fpose/scores.pt --split test --n-phys 64 --workers 16
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/object_s0_test.npz --split test --tag fposeObj_s0_p4 --workers 16

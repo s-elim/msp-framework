@@ -172,7 +172,16 @@ COMPARISONS = (("msp_b300_d32", "direct"), ("msp_b300_d32", "gqcnn"), ("direct",
                ("direct_plfpose", "direct"), ("msp_b300_d32_plfpose", "direct_plfpose"),
                ("plan:gt_p4", "direct_plfpose"),
                ("ho:direct_plfpose", "ho:plan:fpose_p4"), ("ho:direct_plfpose", "ho:direct"),
-               ("ho:direct", "ho:gqcnn"), ("ho:direct_plfpose", "ho:ensemble5_ho"))
+               ("ho:direct", "ho:gqcnn"), ("ho:direct_plfpose", "ho:ensemble5_ho"),
+               # study 4 (pose-uncertainty-marginalised planning) and POISE-U
+               ("plan:fposeU1_s0_p4", "plan:fpose_p64"), ("plan:fposeU1_s0_p4", "plan:fpose_p4"),
+               ("plan:fposeU1_s0_p4", "plan:fposeGauss_s0_p4"),
+               ("plan:fposeU1_s0_p4", "plan:fposeObj_s0_p4"),
+               ("plan:gt_p4", "plan:fposeU1_s0_p4"), ("plan:fposeU1_s0_p4", "plan:fposeXO_s0_p4"),
+               ("plan:fposeXO_s0_p4", "plan:fpose_p64"), ("plan:fposeTV_s0_p4", "plan:fposeU1_s0_p4"),
+               ("direct_plfposeU1_s0", "direct_plfpose"),
+               ("direct_plfposeU1_s0", "plan:fposeU1_s0_p4"),
+               ("direct_plfposeU1_s0", "ensemble5"))
 HOLD = "1,6,9,15"  # the held-out object set of the unseen-object protocol
 
 

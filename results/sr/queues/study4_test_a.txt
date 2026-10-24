@@ -1,0 +1,2 @@
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s0_test.npz --split test --tag fposeU1_s0_p4 --workers 16
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/gaussian_s0_test.npz --split test --tag fposeGauss_s0_p4 --workers 16

@@ -1,0 +1,94 @@
+{
+ "split": "test",
+ "single_view_top1": 0.8592477440834045,
+ "rates": {
+  "0.1": {
+   "triggered": 256,
+   "rate_realised": 0.09926328034121752,
+   "tau": 0.234375,
+   "two_view_top1": 0.8604109883308411,
+   "two_view_sel25": 0.987596869468689,
+   "same_view_2x_samples_top1": 0.8592477440834045,
+   "same_view_2x_samples_sel25": 0.987596869468689,
+   "random_trigger_two_view_top1": 0.8598448964953422,
+   "random_trigger_two_view_top1_sd": 0.0005068106850339134,
+   "two_view_minus_same_view_2x": {
+    "diff": 0.0011632415698841214,
+    "ci95": [
+     0.0,
+     0.002714230213314295
+    ],
+    "p_boot": 0.0978,
+    "n_scenes": 2579
+   },
+   "two_view_minus_single_view": {
+    "diff": 0.0011632415698841214,
+    "ci95": [
+     0.0,
+     0.002714230213314295
+    ],
+    "p_boot": 0.0978,
+    "n_scenes": 2579
+   }
+  },
+  "0.25": {
+   "triggered": 574,
+   "rate_realised": 0.22256688639007366,
+   "tau": 0.96875,
+   "two_view_top1": 0.8631252646446228,
+   "two_view_sel25": 0.987596869468689,
+   "same_view_2x_samples_top1": 0.8600232601165771,
+   "same_view_2x_samples_sel25": 0.987596869468689,
+   "random_trigger_two_view_top1": 0.8606436571478844,
+   "random_trigger_two_view_top1_sd": 0.0007899027713169585,
+   "two_view_minus_same_view_2x": {
+    "diff": 0.0031019775196909904,
+    "ci95": [
+     0.0003877471899613738,
+     0.005816207733005285
+    ],
+    "p_boot": 0.022,
+    "n_scenes": 2579
+   },
+   "two_view_minus_single_view": {
+    "diff": 0.003877471899613738,
+    "ci95": [
+     0.0011632415698841214,
+     0.006979449186474085
+    ],
+    "p_boot": 0.0058,
+    "n_scenes": 2579
+   }
+  },
+  "1": {
+   "triggered": 2579,
+   "rate_realised": 1.0,
+   "tau": 1.0,
+   "two_view_top1": 0.8654517531394958,
+   "two_view_sel25": 0.9968992471694946,
+   "same_view_2x_samples_top1": 0.8619620203971863,
+   "same_view_2x_samples_sel25": 0.9968992471694946,
+   "random_trigger_two_view_top1": 0.8654517531394958,
+   "random_trigger_two_view_top1_sd": 0.0,
+   "two_view_minus_same_view_2x": {
+    "diff": 0.0034897245932370424,
+    "ci95": [
+     0.0007754943799227476,
+     0.0065917023457586765
+    ],
+    "p_boot": 0.0218,
+    "n_scenes": 2579
+   },
+   "two_view_minus_single_view": {
+    "diff": 0.006203955039381981,
+    "ci95": [
+     0.002714230213314295,
+     0.010081427171826363
+    ],
+    "p_boot": 0.0004,
+    "n_scenes": 2579
+   }
+  }
+ },
+ "fp_seconds_per_view_median": 0.5724661350250244
+}

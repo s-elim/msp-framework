@@ -1,0 +1,2 @@
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s0_train.npz --split train --tag fposeU1_s0_p4 --workers 32
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s0_calib.npz --split calib --tag fposeU1_s0_p4 --workers 32

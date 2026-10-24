@@ -1,0 +1,1 @@
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s0_calib.npz --split calib --tag fposeU1_s0_p4 --workers 16

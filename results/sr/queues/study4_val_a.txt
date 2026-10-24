@@ -1,0 +1,4 @@
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s0_val.npz --split val --tag fposeU1_s0_p4 --workers 32
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s1_val.npz --split val --tag fposeU1_s1_p4 --workers 32
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/knn_s2_val.npz --split val --tag fposeU1_s2_p4 --workers 32
+--pose results/sr/runs/fpose/scores.pt --pose-samples results/sr/posterior/gaussian_s0_val.npz --split val --tag fposeGauss_s0_p4 --workers 32
