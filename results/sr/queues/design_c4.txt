@@ -1,0 +1,6 @@
+--method direct --planner fpose --seed 0 --design
+--method msp --planner fpose --seed 0 --design
+--method direct --planner fpose --seed 1 --design
+--method msp --planner fpose --seed 1 --design
+--method direct --planner fpose --seed 2 --design
+--method msp --planner fpose --seed 2 --design
