@@ -1,0 +1,175 @@
+% Scientific Reports Article. Every number comes from numbers.tex / table_*.tex, written by
+% make_tables.py from the results files; figures come from figures/make_figures.py.
+\documentclass[pdflatex,sn-nature]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+\usepackage{textcomp}
+\usepackage{bm}
+
+\definecolor{famlearn}{HTML}{0072B2}
+\definecolor{fampose}{HTML}{D55E00}
+\definecolor{famref}{HTML}{8C8C8C}
+\definecolor{bestcell}{HTML}{CDEBDD}
+\definecolor{secondcell}{HTML}{EAF6F0}
+\newcommand{\best}{\cellcolor{bestcell}}
+\newcommand{\second}{\cellcolor{secondcell}}
+
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.85}
+
+\input{numbers}
+
+\raggedbottom
+
+\begin{document}
+
+\title[Pose accuracy is a weak proxy for grasp success]{Pose accuracy is a weak proxy for grasp success: an outcome-level benchmark on real LINEMOD images}
+
+\author[1]{\fnm{Md Selim} \sur{Sarowar}}
+\author*[1]{\fnm{Sungho} \sur{Kim}}\email{[corresponding author e-mail to be added]}
+
+\affil[1]{\orgdiv{Advanced Visual Intelligence Lab, Department of Electronics Engineering}, \orgname{Yeungnam University}, \orgaddress{\country{Republic of Korea}}}
+
+\abstract{Robots usually grasp known objects by estimating a six-dimensional pose and planning on the object's model, and pose estimators are ranked by whether the average model-point error (ADD or ADD-S) stays below a tenth of the object diameter. Whether this criterion predicts grasp success has not been measured on real images. We introduce LM-Grasp, which pairs all \NScenes\ real test images of the 13 standard LINEMOD objects with 16 observation-derived candidate grasps each and with outcomes simulated on the scanned meshes at the annotated poses, with friction, mass and centre of mass hidden from every method. Pose errors that pass ADD(-S) on every scene still cost up to \NoiseSatDrop\ in top-1 grasp success. FoundationPose passes on \FpAdd\ of the scenes, yet its planned grasps succeed \FpPlanTop\ of the time against \GtPlanTop\ with the exact pose, and on scenes whose pose error lies between 5\% and 10\% of the diameter its success drops to \FpBinHiFp\ against \FpBinHiGt. Perception trained on grasp outcomes needs neither an object model nor a simulator at decision time, decides in milliseconds, and selects grasps that succeed \EnsSelQMean\ of the time on its most confident quarter of scenes, more often than the pose pipeline (\FpPlanSelQ). Outcome-level evaluation should accompany pose benchmarks.}
+
+\keywords{Robotic grasping, 6D object pose estimation, LINEMOD, grasp success prediction, selective prediction, conformal prediction}
+
+\maketitle
+
+\section{Introduction}\label{sec:intro}
+
+A robot that grasps a known object usually first estimates the object's six-dimensional (6D) pose and then plans the grasp on the object's model~\cite{xiang2018posecnn,tremblay2018dope,deng2020selfsup}. Pose estimators are developed and ranked on benchmarks such as LINEMOD~\cite{hinterstoisser2012} and BOP~\cite{hodan2018bop} by a geometric criterion: the average distance between model points under the estimated and the true pose (ADD, or ADD-S for symmetric objects~\cite{hodan2016eval}) must fall below a tenth of the object diameter. On LINEMOD, current methods pass this test on nearly every image; FoundationPose~\cite{wen2024foundationpose} passes it on \FpAdd\ of the scenes used here. The test does not say whether a grasp planned on the pose will lift the object. A 10\% diameter tolerance is several millimetres on a small object and centimetres on a large one, while a parallel-jaw grasp can fail on a few millimetres of misplaced contact, and some causes of failure, such as low friction or an off-centre mass, are not part of any pose.
+
+Grasp-learning methods take the opposite route and predict grasp success directly from images or point clouds~\cite{mahler2017dexnet,morrison2018ggcnn,tenpas2017gpd,sundermeyer2021contact,fang2020graspnet,fang2023anygrasp}; reviews describe a steady shift toward such outcome-supervised models~\cite{bohg2014survey,newbury2023review}. They are evaluated on their own data, with their own grippers and success criteria, so pose pipelines and outcome-trained perception are rarely compared on the same images, the same candidate grasps and the same outcomes. Learned image codes that are compressed for a downstream decision, studied as task-oriented communication~\cite{shao2022taskcomm} and information bottlenecks for control~\cite{pacelli2020}, raise a further question for robots that offload perception~\cite{kehoe2015cloud,matsubara2022split}: how many bits does a grasp decision need, compared with sending the pose?
+
+We answer these questions on real images. LM-Grasp (Fig.~\ref{fig:overview}) pairs every real LINEMOD test image of the 13 standard objects with 16 candidate grasps proposed from the observation and with outcomes obtained by executing each candidate on the object's scanned mesh at its annotated pose in a physics simulator, with friction, mass and centre of mass drawn per scene and never shown to any method. The images are real; the grasp outcomes are simulated. We ask four research questions:
+\begin{itemize}
+\item[\textbf{RQ1}] How well does pose accuracy, as scored by ADD(-S), predict grasp success?
+\item[\textbf{RQ2}] How close does perception trained on grasp outcomes, with no object model or simulator at decision time, come to pose-then-plan pipelines, and at what cost?
+\item[\textbf{RQ3}] Can a robot tell in advance which of its grasps will succeed, so that it acts only when confident?
+\item[\textbf{RQ4}] How many bits does a grasp decision need, compared with a pose?
+\end{itemize}
+Our contributions map one to one onto these questions.
+\begin{enumerate}
+\item LM-Grasp, an outcome-level protocol on real LINEMOD images with \NRollouts\ simulated grasp executions, released with the code that generates it.
+\item Evidence that ADD(-S) is a weak proxy for grasp success (RQ1): controlled pose errors that ADD(-S) accepts on every scene cost up to \NoiseSatDrop\ in top-1 success, and FoundationPose loses \CmpGtVsFpose\ against the exact pose (95\% CI \CmpGtVsFposeCi) while passing ADD(-S) on \FpAdd\ of the scenes.
+\item A matched comparison (RQ2, RQ3) of FoundationPose and a learned pose regressor followed by the same planner, a grasp-patch network with the Dex-Net 2.0 architecture~\cite{mahler2017dexnet}, and manipulation-sufficient perception (MSP) with stochastic and deterministic codes and a deep ensemble~\cite{lakshminarayanan2017}, all reproduced on the same data, candidates and budget with five seeds and paired tests.
+\item A payload analysis (RQ4) that measures decision quality per entropy-coded bit for the learned codes and for the pose itself.
+\end{enumerate}
+The closest prior work evaluates pose estimators by pose error alone~\cite{hodan2018bop,hodan2016eval}, trains pose estimators for manipulation without measuring grasp outcomes on a shared benchmark~\cite{tremblay2018dope,deng2020selfsup}, or learns grasp quality on synthetic or self-collected data without a pose-pipeline comparison~\cite{mahler2017dexnet,sundermeyer2021contact,fang2023anygrasp}. To our knowledge, LM-Grasp is the first protocol that scores pose pipelines and outcome-trained perception by the success of the grasps they choose on the same real LINEMOD images.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig1_overview.pdf}
+\caption{\textbf{Two routes from one real observation to a grasp decision.} Every method sees the same real RGB-D crop and the same 16 candidate grasps. Pose-then-plan (orange) estimates the object pose and scores each candidate by simulating it on the object's mesh with the physics prior. Manipulation-sufficient perception (green) maps the observation to a compact code from which an outcome head scores every candidate. The outcome of every candidate is simulated in MuJoCo on the scanned mesh at the annotated pose, with friction, mass and centre of mass drawn per scene and visible to no method; lifted (green), dropped (vermillion) and blocked (open circle) candidates are shown on the right.}\label{fig:overview}
+\end{figure}
+
+\section{Results}\label{sec:results}
+
+\subsection{LM-Grasp: real observations, simulated outcomes}
+The benchmark contains \NScenes\ scenes, split per object into 50-frame blocks (\NTrain\ train, \NVal\ validation, \NCalib\ calibration and \NTest\ test scenes; Methods). On the test split, \TestExec\ of the candidates are executable, \TestBase\ lift the object (the success rate of a random candidate), and \TestOracle\ of the scenes contain at least one successful candidate, the ceiling for any selection rule (Fig.~\ref{fig:corpus}). Success rates differ by more than an order of magnitude between objects, from the eggbox and the camera, where few candidates close on graspable geometry, to the glue and the benchvise. Because all methods choose among the same candidates and are scored on the same simulated outcomes, differences between them are differences in how they read the image.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig2_lmgrasp.pdf}
+\caption{\textbf{LM-Grasp.} \textbf{a}, Four real test crops with their 16 candidate grasps drawn as jaw axes and coloured by simulated outcome. \textbf{b}, Fraction of candidates that are executable (grey) and that lift the object (green) per object, over all \NScenes\ scenes. Outcomes are simulated on the scanned meshes at the annotated poses; friction, mass and centre of mass are drawn per scene from a prior because LINEMOD publishes no physical properties.}\label{fig:corpus}
+\end{figure}
+
+\subsection{Pose accuracy is a weak proxy for grasp success (RQ1)}
+We first planned grasps with the exact annotated pose and perturbed it by controlled rotation and translation errors (Fig.~\ref{fig:noise}). With the exact pose, the planner, which knows the object, its mesh, the simulator and the physics prior but not the scene's physics, picks a successful grasp in \GtPlanTop\ of the test scenes, close to the oracle (\TestOracle). A rotation error with s.d. $5^\circ$ leaves the ADD(-S) pass rate at \NoiseRotFiveAdd\ but reduces grasp success to \NoiseRotFiveTop; a translation error with per-axis s.d. 5\,mm passes ADD(-S) on \NoiseTransFiveAdd\ of the scenes and reduces success to \NoiseTransFiveTop. Across all settings in which ADD(-S) accepts at least 99\% of the scenes, top-1 success falls to as low as \NoiseSatMinTop, a loss of \NoiseSatDrop\ (Fig.~\ref{fig:noise}c). The two quantities also disagree in the opposite direction: at large errors the planner still finds a successful grasp on scenes where the pose fails ADD(-S), because many candidates tolerate a misplaced object.
+
+The same gap appears with a state-of-the-art estimator. FoundationPose~\cite{wen2024foundationpose}, given the image, the ground-truth mask and the CAD model, passes ADD(-S) on \FpAdd\ of the test scenes (median rotation error \FpRotErr$^\circ$, translation error \FpTransErr\,mm). Its planned grasps succeed in \FpPlanTop\ of the scenes against \GtPlanTop\ with the exact pose, a paired difference of \CmpGtVsFpose\ (95\% CI \CmpGtVsFposeCi). The loss grows with the pose error even inside the accepted range: on the \FpBinHiN\ scenes whose ADD(-S) error lies between 5\% and 10\% of the diameter, all of which pass, FoundationPose-planned grasps succeed \FpBinHiFp\ of the time against \FpBinHiGt\ with the exact pose, whereas below 2\% of the diameter the two are \FpBinLoFp\ and \FpBinLoGt.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig3_pose_noise.pdf}
+\caption{\textbf{Pose error versus grasp success.} The planner scores candidates with the annotated pose perturbed by a random rotation (\textbf{a}) or translation (\textbf{b}); orange: top-1 grasp success, grey dashed: ADD(-S)$<0.1d$ pass rate, dotted: success with the exact pose. Bands: $\pm$ s.d. over three noise seeds (narrower than the markers where invisible). \textbf{c}, Each perturbation level as a point: many levels pass ADD(-S) on every scene while losing grasp success. Learned pose regressor and FoundationPose operating points are marked.}\label{fig:noise}
+\end{figure}
+
+\subsection{Outcome-trained perception against pose-then-plan (RQ2)}
+Table~\ref{tab:main} compares all methods under the matched protocol; none of these numbers comes from a published leaderboard, since LM-Grasp is new. Among methods that use neither an object model nor a simulator at decision time, the MSP outcome scorer with a deterministic code reaches \DirectTop\ top-1 success and a within-scene AUC of \DirectAuc, and an ensemble of five such scorers reaches \EnsTop\ (paired gain over a single scorer \CmpEnsembleVsDirect, 95\% CI \CmpEnsembleVsDirectCi). Both rank candidates better than a network with the Dex-Net 2.0 grasp-quality architecture retrained on the same data (\GqTop; difference \CmpDirectVsGqcnn, CI \CmpDirectVsGqcnnCi), which sees only a depth patch per candidate. The stochastic MSP code, regularised by a rate term with $\beta=300$, trails the deterministic code by \CmpMspVsDirect\ (CI \CmpMspVsDirectCi); raising $\beta$ narrows the gap monotonically (\BetaTopOne\ at $\beta=1$, \BetaTopThousand\ at $\beta=1000$), so on this benchmark the rate term costs decision quality rather than adding it.
+
+Pose-then-plan is stronger on top-1 success when its pose is good and its planner holds the exact simulator: a learned pose regressor trained on the same crops (ADD(-S) pass rate \PrAdd) followed by the planner reaches \PrPlanTop, and FoundationPose followed by the planner reaches \FpPlanTop, \CmpFposeVsEnsemble\ above the ensemble (CI \CmpFposeVsEnsembleCi). This advantage has three qualifications. The planner uses the same simulator and meshes that produced the labels, so it faces no model mismatch, which a real deployment would add. It needs the object's CAD model, a physics simulator and 64 rollouts per scene at decision time, plus \FpSecPerScene\,s of GPU time per scene for FoundationPose, against \LatDirectCpu\,ms on eight CPU threads for a single outcome scorer and \LatEnsCpu\,ms for the ensemble. And the advantage is not uniform: the ensemble chooses better grasps than FoundationPose-plus-planner on the \EnsBeatsFpObjects, while pose-then-plan is far ahead on objects with few graspable candidates, where the learned scorers have little positive evidence.
+
+\begin{table}[t]
+\caption{\textbf{Matched comparison on the LM-Grasp test split} (\NTest\ scenes). Top-1: success of the highest-scoring candidate. AUC: within-scene ranking AUC. Sel@25\%: success on the 25\% of scenes with the most confident choice. Cert.: fraction of scenes certified by selection-conditional split conformal prediction at $\alpha=0.1$ and the success rate on those scenes. Mean $\pm$ s.d. over seeds (n); single-run rows are deterministic given the pose. Row colours: \textcolor{famlearn}{\textbf{learned scorers}} (no object model at decision time), \textcolor{fampose}{\textbf{pose-then-plan}} (object model, simulator and physics prior at decision time), \textcolor{famref}{\textbf{references}}. Shading marks the best and second-best value among non-privileged methods.}\label{tab:main}
+\centering\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lccccc}
+\toprule
+Method & Top-1 & AUC & Sel@25\% & Cert. fraction & Cert. precision\\
+\midrule
+\input{table_main}
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Knowing when to act (RQ3)}
+Ranking scenes by the confidence of the chosen grasp lets a robot act only when it is likely to succeed (Fig.~\ref{fig:comparison}b). On the quarter of scenes where it is most confident, the MSP ensemble succeeds \EnsSelQMean\ of the time and a single deterministic scorer \DirectSelQMean, above FoundationPose-plus-planner at the same coverage (\FpPlanSelQ), whose score, an average over four physics draws on an estimated pose, cannot express how reliable the pose itself is. At full coverage the order reverses, so the two routes are complementary: pose-then-plan for the typical scene, outcome-trained confidence for deciding when the robot should act at all. Selection-conditional conformal prediction~\cite{vovk2005,angelopoulos2023} turns the scores into a certificate: at $\alpha=0.1$ the ensemble certifies \EnsCertFrac\ of the test scenes, of which \EnsCertPrec\ succeed, with empirical coverage \EnsCertCov.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig4_comparison.pdf}
+\caption{\textbf{Grasp success of every method.} \textbf{a}, Top-1 success on the test split; dots: individual seeds, bars: mean $\pm$ s.d.; hatched: pose-then-plan, which uses the object model, the simulator and the physics prior at decision time. \textbf{b}, Success on the fraction of scenes a method acts on when it acts only on its most confident choices; bands: $\pm$ s.d. over seeds.}\label{fig:comparison}
+\end{figure}
+
+\subsection{How many bits a grasp decision needs (RQ4)}
+Because one code scores every candidate, its size is what a robot must transmit when perception runs on an edge server. Under a uniform quantiser with an entropy coder fitted on the calibration split (Methods), the deterministic code reaches \PayDirectAtSixteen\ top-1 success within 16 bits and \PayDirectAtThirtyTwo\ within 32 bits, and needs \PayDirectNinetyNine\ bits to come within 1\% of its full-precision quality (\PayDirectFull); the stochastic code reaches \PayMSPAtSixteen\ and \PayMSPAtThirtyTwo\ at the same budgets (Fig.~\ref{fig:payload}). A pose is not more expensive: the annotated test poses coded at 1\,mm and $1^\circ$ resolution take \PoseBitsOne\ bits, and at 5\,mm and $5^\circ$ \PoseBitsFive\ bits. Payload therefore does not separate the two routes; what separates them is what the receiver needs. A pose is useful only to a receiver that holds the object model, a simulator or grasp planner and the compute to run it, whereas the outcome code is read by a small head that runs in milliseconds.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/fig5_payload.pdf}
+\caption{\textbf{Decision quality per transmitted bit.} \textbf{a}, Top-1 success against the entropy-coded payload per scene, as the upper envelope over the number of transmitted coordinates and the bits per coordinate; bands: $\pm$ s.d. over five seeds. \textbf{b}, The stochastic code across rate weights $\beta$ (three seeds each).}\label{fig:payload}
+\end{figure}
+
+\subsection{Unseen objects}
+Generalisation to new object shapes was tested by removing four objects (ape, cat, duck and phone) from training and evaluating on their test scenes (Table~\ref{tab:unseen}). All learned scorers lose ranking quality on unseen shapes relative to models that saw them, and keep most of their top-1 success, which on these four objects is high for any reasonable choice. Pose-then-plan requires the object's CAD model and was not run on unseen objects; FoundationPose can use a model of a new object, which this protocol does not test.
+
+\begin{table}[t]
+\caption{\textbf{Unseen objects} (ape, cat, duck, phone held out of training; test scenes of those four objects). Seen: models trained on all 13 objects (n = 5), evaluated on the same scenes. Mean $\pm$ s.d. over seeds (unseen: n = 3).}\label{tab:unseen}
+\centering\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+Method & Top-1, seen & Top-1, unseen & AUC, unseen & Sel@25\%, unseen\\
+\midrule
+\input{table_unseen}
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}\label{sec:discussion}
+Pose benchmarks score what a pose estimator returns; a robot needs the grasp that pose leads to. On real LINEMOD images with simulated outcomes, the two disagree in a systematic way: errors well inside the ADD(-S) tolerance remove a measurable share of successful grasps, and a state-of-the-art estimator that passes on \FpAdd\ of the scenes plans grasps that succeed \CmpGtVsFpose\ less often than the exact pose. A threshold relative to the object diameter cannot capture this, because the tolerance of a grasp is set by the gripper and the local geometry, not by the size of the object. Outcome-level evaluation, as in LM-Grasp, measures the quantity a manipulation system is built for and is cheap to add to existing pose benchmarks, since it needs only the meshes and poses they already provide.
+
+Outcome-trained perception does not yet match a pose pipeline that holds the exact simulator, but it closes much of the distance without any object model at decision time, and it is the better judge of its own reliability: its most confident choices succeed more often than the pose pipeline's, and conformal calibration converts that confidence into a certificate. The two routes fail on different objects, which suggests combining them rather than choosing one. On payload, our measurements argue against a common motivation for compact task codes: an entropy-coded pose costs a few tens of bits, comparable to the outcome code, so the case for outcome codes rests on what the receiver must hold, not on the size of the message. The stochastic, rate-regularised code did not improve decisions over a deterministic code compressed after training; on this benchmark, rate is better controlled at transmission time than during learning.
+
+Several limitations bound these conclusions. Grasp outcomes are simulated, not executed on a robot: the images are real, but friction, mass and centre of mass are drawn from a prior because LINEMOD publishes none, and a real gripper adds contact and control effects the simulator does not model. Every method receives a crop from the annotated visible mask, the known-detection assumption standard in LINEMOD pose studies, so detection errors are not part of the comparison. The planner of the pose pipelines uses the simulator that produced the labels, which favours pose-then-plan. LINEMOD contains one annotated object per image and 13 objects; other benchmarks with more clutter and more objects would test the same questions more broadly.
+
+\section{Methods}\label{sec:methods}
+\input{methods_body}
+
+\backmatter
+
+\bmhead{Data availability}
+LINEMOD is available from the BOP benchmark (\url{https://bop.felk.cvut.cz}). The LM-Grasp corpus is generated deterministically from it by the released scripts; the generated corpus, trained model scores and all results files are available from the corresponding author on reasonable request.
+
+\bmhead{Code availability}
+The code that builds LM-Grasp, trains and evaluates every method and regenerates every figure, table and number in this article will be released at \url{https://github.com/s-elim/msp-framework} upon publication.
+
+\bmhead{Acknowledgements}
+[To be completed by the authors.]
+
+\bmhead{Author contributions}
+M.S.S. conceived the study, developed the method and the benchmark, ran the experiments and wrote the manuscript. S.K. supervised the work and revised the manuscript. [To be confirmed by the authors.]
+
+\bmhead{Competing interests}
+The authors declare no competing interests.
+
+\bibliography{refs}
+
+\end{document}
