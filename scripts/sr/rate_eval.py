@@ -12,6 +12,13 @@ only mu is transmitted, and decisions are made at z = mu, so both methods are co
 matched payloads under the same quantizer and entropy-code estimate.
 
     python scripts/sr/rate_eval.py --runs 'msp_b*_d32_s*' --out results/sr/rate.json
+
+`--scheme dims` (fixed on 2026-10-24 before any test number of this scheme was seen) sends only
+m of the latent coordinates, ranked by each method's own calibration-split criterion: MSP keeps
+the m dimensions with the largest mean KL to the prior and the receiver uses the prior
+(mu = 0, log sigma^2 = 0) for the rest and the calibration-mean log sigma^2 for the sent ones,
+so only m means are on the wire; the direct scorer sends its first m PCA coefficients (PCA
+fitted on calibration codes). Same quantizer and code-length estimate for both.
 """
 
 from __future__ import annotations
@@ -33,6 +40,8 @@ from msp.belief import DiagonalGaussianBelief  # noqa: E402
 from msp.models import OutcomeHead  # noqa: E402
 
 BITS = (1, 2, 3, 4, 6, 8)
+DIM_BITS = (2, 3, 4, 6)
+DIMS = (1, 2, 4, 8, 16, 32)
 T_SCALE = 10.0
 
 
@@ -66,11 +75,59 @@ def scores(head, mu, lv, actions, k: int = 32) -> np.ndarray:
     return torch.cat(out).numpy()
 
 
+def dims_rows(head, sc, direct: bool, lat: int, acts, y, obj_te) -> list[dict]:
+    mu_c, mu_t = sc["calib"]["mu"].double(), sc["test"]["mu"].double()
+    if direct:
+        mean = mu_c.mean(0)
+        _, _, V = torch.linalg.svd(mu_c - mean, full_matrices=False)
+        order = None
+    else:
+        lv_c = sc["calib"]["logvar"].double()
+        kl = 0.5 * (lv_c.exp() + mu_c ** 2 - 1 - lv_c).mean(0)
+        order = torch.argsort(kl, descending=True)
+        lv_mean = lv_c.mean(0)
+    rows = []
+    for m in DIMS:
+        if m > lat:
+            continue
+        if direct:
+            U = V[:m].T  # (lat, m)
+            enc_c, enc_t = (mu_c - mean) @ U, (mu_t - mean) @ U
+
+            def dec(c, U=U):
+                return (mean + c @ U.T).float(), None
+        else:
+            keep = order[:m]
+            enc_c, enc_t = mu_c[:, keep], mu_t[:, keep]
+
+            def dec(c, keep=keep):
+                mu = torch.zeros(len(c), lat, dtype=torch.float64)
+                lv = torch.zeros(len(c), lat, dtype=torch.float64)
+                mu[:, keep] = c
+                lv[:, keep] = lv_mean[keep]
+                return mu.float(), lv.float()
+        lo = torch.quantile(enc_c, 0.01, dim=0)
+        hi = torch.quantile(enc_c, 0.99, dim=0)
+        for b in DIM_BITS:
+            qc, symc, L = quantize(enc_c, lo, hi, b)
+            qt, symt, _ = quantize(enc_t, lo, hi, b)
+            s_te = scores(head, *dec(qt), acts["test"])
+            s_ca = scores(head, *dec(qc), acts["calib"])
+            mt = ranking_metrics(s_te, y["test"], obj_te)
+            c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
+            rows.append({"dims": m, "bits_per_dim": b, "payload_bits": code_bits(symc, symt, L),
+                         "within_scene_auc": mt["within_scene_auc"],
+                         "top1_success": mt["top1_success"], "cert_coverage": c["coverage"],
+                         "cert_fraction": c["certified_fraction"]})
+    return rows
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", default="msp_b*_d32_s*")
     ap.add_argument("--data", default=str(REPO / "data/lm_grasp"))
     ap.add_argument("--out", default=str(REPO / "results/sr/rate.json"))
+    ap.add_argument("--scheme", choices=["full", "dims"], default="full")
     a = ap.parse_args()
     lab = {k: torch.load(Path(a.data) / f"{k}.pt", map_location="cpu", weights_only=False)
            for k in ("calib", "test")}
@@ -101,6 +158,13 @@ def main() -> None:
 
         lo = torch.quantile(x_cal, 0.01, dim=0)
         hi = torch.quantile(x_cal, 0.99, dim=0)
+        if a.scheme == "dims":
+            res[d.name] = {"method": r["args"]["method"], "beta": r["args"]["beta"],
+                           "latent": lat, "seed": r["args"]["seed"],
+                           "rows": dims_rows(head, sc, direct, lat, acts, y,
+                                             lab["test"]["obj_id"].numpy())}
+            print(d.name, "dims done", flush=True)
+            continue
         rows = []
         s_te = scores(head, *split(x_te), acts["test"])
         s_ca = scores(head, *split(x_cal), acts["calib"])

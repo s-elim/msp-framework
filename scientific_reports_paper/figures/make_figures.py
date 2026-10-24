@@ -159,13 +159,76 @@ def fig2_corpus() -> None:
     save(fig, "fig2_lmgrasp")
 
 
-FIGS = {"fig2": fig2_corpus}
+METRICS = REPO / "results/sr/metrics.json"
+
+
+def metrics() -> dict:
+    return json.loads(METRICS.read_text())
+
+
+def noise_table(m: dict, kind: str) -> tuple[np.ndarray, dict]:
+    """Pose-noise sweep: magnitudes and per-metric (n_levels, n_seeds) arrays."""
+    pat = "noise_r{:g}_t0_s{}_p4" if kind == "rot" else "noise_r0_t{:g}_s{}_p4"
+    levels = (1, 2, 5, 10, 20, 45) if kind == "rot" else (2, 5, 10, 20, 40)
+    out = {k: [] for k in ("top1_success", "add_01d", "within_scene_auc")}
+    for lv in levels:
+        rows = [m["plan"][pat.format(lv, s)] for s in range(3)]
+        for k in out:
+            out[k].append([r[k] for r in rows])
+    return np.array(levels, float), {k: np.array(v) for k, v in out.items()}
+
+
+def fig3_pose_noise() -> None:
+    """Pose error versus grasp success of the pose-then-plan pipeline."""
+    m = metrics()
+    gt = m["plan"]["gt_p4"]["top1_success"]
+    fig, axs = plt.subplots(1, 3, figsize=(180 * MM, 56 * MM),
+                            gridspec_kw={"width_ratios": [1, 1, 1.05], "wspace": 0.42})
+    for ax, kind, lab, letter in ((axs[0], "rot", "Rotation noise s.d. (deg)", "a"),
+                                  (axs[1], "trans", "Translation noise s.d. per axis (mm)",
+                                   "b")):
+        x, d = noise_table(m, kind)
+        for k, col, ls, name in (("top1_success", C_POSE, "-", "grasp success (top-1)"),
+                                 ("add_01d", OK["grey"], "--", "ADD(-S) < 0.1d pass rate")):
+            mu, sd = d[k].mean(1), d[k].std(1, ddof=1)
+            ax.fill_between(x, mu - sd, mu + sd, color=col, alpha=0.25, lw=0)
+            ax.plot(x, mu, ls, color=col, marker="o", ms=2.5, lw=1.1, label=name)
+        ax.axhline(gt, color=C_POSE, ls=":", lw=0.9)
+        ax.text(x[0], gt + 0.015, "exact pose", color=C_POSE, fontsize=6, va="bottom")
+        ax.set_xscale("log")
+        ax.set_xticks(x, [f"{v:g}" for v in x])
+        ax.minorticks_off()
+        ax.set_xlabel(lab)
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel("Rate on test scenes")
+        ax.text(-0.3, 1.04, letter, transform=ax.transAxes, fontsize=9, fontweight="bold")
+    axs[0].legend(loc="lower left", frameon=False)
+    ax = axs[2]
+    for kind, mk in (("rot", "o"), ("trans", "s")):
+        x, d = noise_table(m, kind)
+        ax.scatter(d["add_01d"].mean(1), d["top1_success"].mean(1), marker=mk, s=14,
+                   facecolor="white" if kind == "rot" else C_POSE, edgecolor=C_POSE, lw=0.9,
+                   label="rotation noise" if kind == "rot" else "translation noise", zorder=3)
+    ax.plot([0, 1], [0, gt], color=OK["grey"], lw=0.6, ls=":")
+    ax.set_xlabel("ADD(-S) < 0.1d pass rate")
+    ax.set_ylabel("Grasp success (top-1)")
+    ax.set_xlim(0, 1.03)
+    ax.set_ylim(0.3, 0.9)
+    ax.legend(loc="lower right", frameon=False)
+    ax.text(-0.3, 1.04, "c", transform=ax.transAxes, fontsize=9, fontweight="bold")
+    save(fig, "fig3_pose_noise")
+
+
+FIGS = {"fig2": fig2_corpus, "fig3": fig3_pose_noise}
 
 
 def main() -> None:
+    global METRICS
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None)
+    ap.add_argument("--metrics", default=str(METRICS))
     a = ap.parse_args()
+    METRICS = Path(a.metrics)
     for k, f in FIGS.items():
         if a.only is None or k in a.only:
             f()
