@@ -7,8 +7,9 @@ Inputs: data/lm_grasp/{train,val,calib,test}.pt, data/lm (real RGB), results/sr/
 results/sr/rate.json, results/sr/plan/*.pt, results/sr/runs/*/scores.pt.
 Outputs: fig*.pdf (vector, fonts embedded) and fig*.png (300 dpi) beside this script.
 
-Colour semantics (Okabe-Ito, colourblind safe): teal/bluish green = MSP (ours), orange =
-pose-then-plan, sky blue = grasp-aligned patch scorer (GQ-CNN architecture), grey = other.
+Colour semantics (Okabe-Ito, colourblind safe): bluish green = MSP with a stochastic code,
+blue = MSP with a deterministic code, reddish purple = its 5-model ensemble, orange/vermillion =
+pose-then-plan, sky blue = grasp-aligned patch scorer (GQ-CNN architecture), grey = reference.
 Grasp outcome colours: bluish green = lifted, vermillion = dropped, grey dashed = not executable.
 """
 
@@ -323,9 +324,9 @@ def fig3_pose_noise() -> None:
 
 METHODS = (  # group key, label, colour, kind
     ("gqcnn", "Grasp-patch CNN", C_GQ, "learned"),
-    ("msp_b300_d32", "MSP (ours)", C_MSP, "learned"),
-    ("direct", "Outcome scorer", C_DIRECT, "learned"),
-    ("ensemble5", "Ensemble of 5", OK["purple"], "learned"),
+    ("msp_b300_d32", "MSP, stochastic code", C_MSP, "learned"),
+    ("direct", "MSP, deterministic code", C_DIRECT, "learned"),
+    ("ensemble5", "MSP, deterministic x5", OK["purple"], "learned"),
     ("plan:pose_p4", "Pose regressor + planner", C_POSE, "pose"),
     ("plan:fpose_p4", "FoundationPose + planner", OK["verm"], "pose"),
 )
@@ -423,8 +424,9 @@ def fig5_payload() -> None:
             curves.append(np.interp(np.log(grid), np.log(x), y, left=np.nan))
         return np.array(curves)
 
-    sets = [("MSP (ours), beta 300", [v for k, v in rm.items() if k.startswith("msp_b300_d32")],
-             C_MSP), ("Outcome scorer + PCA", list(rd.values()), C_DIRECT)]
+    sets = [("MSP stochastic, beta 300", [v for k, v in rm.items()
+                                           if k.startswith("msp_b300_d32")], C_MSP),
+            ("MSP deterministic + PCA", list(rd.values()), C_DIRECT)]
     for lab, runs, col in sets:
         if not runs:
             continue
