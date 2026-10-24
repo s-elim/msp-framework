@@ -219,7 +219,141 @@ def fig3_pose_noise() -> None:
     save(fig, "fig3_pose_noise")
 
 
-FIGS = {"fig2": fig2_corpus, "fig3": fig3_pose_noise}
+METHODS = (  # group key, label, colour, kind
+    ("gqcnn", "Grasp-patch CNN", C_GQ, "learned"),
+    ("msp_b300_d32", "MSP (ours)", C_MSP, "learned"),
+    ("direct", "Outcome scorer", C_DIRECT, "learned"),
+    ("ensemble5", "Ensemble of 5", OK["purple"], "learned"),
+    ("plan:pose_p4", "Pose regressor + planner", C_POSE, "pose"),
+    ("plan:fpose_p4", "FoundationPose + planner", OK["verm"], "pose"),
+)
+
+
+def group_values(m: dict, g: str, k: str) -> np.ndarray:
+    if g.startswith("plan:") and g in m["groups"]:
+        return np.array(m["groups"][g][k]["values"])
+    if g.startswith("plan:"):
+        return np.array([m["plan"][g[5:]][k]]) if g[5:] in m["plan"] else np.array([])
+    return np.array(m["groups"][g][k]["values"]) if g in m["groups"] else np.array([])
+
+
+def fig4_comparison() -> None:
+    """Top-1 grasp success of every method and selective execution."""
+    m = metrics()
+    fig, axs = plt.subplots(1, 2, figsize=(180 * MM, 62 * MM),
+                            gridspec_kw={"width_ratios": [1.15, 1], "wspace": 0.3})
+    ax = axs[0]
+    rng = np.random.default_rng(0)
+    rows = [r for r in METHODS if group_values(m, r[0], "top1_success").size]
+    for i, (g, lab, col, kind) in enumerate(rows):
+        v = group_values(m, g, "top1_success")
+        ax.barh(i, v.mean(), color=col, alpha=0.85 if kind == "learned" else 0.6, height=0.68,
+                hatch=None if kind == "learned" else "////", edgecolor="white", lw=0)
+        if v.size > 1:
+            ax.errorbar(v.mean(), i, xerr=v.std(ddof=1), color="black", lw=0.7, capsize=1.5)
+            ax.scatter(v, i + rng.uniform(-0.18, 0.18, v.size), s=4, color="black", zorder=3)
+        ax.text(v.mean() + 0.012 + (v.std(ddof=1) if v.size > 1 else 0), i,
+                f"{v.mean():.3f}", va="center", fontsize=6)
+    ax.set_yticks(range(len(rows)), [r[1] for r in rows])
+    ax.invert_yaxis()
+    base = m["corpus"]["test"]["random_top1"]
+    gt = m["plan"]["gt_p4"]["top1_success"]
+    orc = m["corpus"]["test"]["oracle_any_success"]
+    refs = []
+    for x, lab, ls in ((base, "random candidate", ":"),
+                       (gt, "exact pose + planner (privileged)", "--"),
+                       (orc, "oracle (any candidate lifts)", "-")):
+        refs.append(ax.axvline(x, color=OK["grey"], ls=ls, lw=0.8, label=lab))
+    ax.legend(handles=refs, loc="upper center", bbox_to_anchor=(0.45, 1.16), ncol=3,
+              frameon=False, fontsize=5.6, handlelength=1.6, columnspacing=0.8)
+    ax.set_xlim(0, 1.0)
+    ax.set_xlabel("Top-1 grasp success on test scenes")
+    ax.text(-0.42, 1.04, "a", transform=ax.transAxes, fontsize=9, fontweight="bold")
+
+    ax = axs[1]
+    for g, lab, col, kind in rows:
+        if g.startswith("plan:"):
+            key = g[5:] if g[5:] in m["plan"] else None
+            if key is None:
+                continue
+            cur = m["plan"][key]["selective_curve"]
+            cov = np.round(np.linspace(0.05, 1.0, 20), 2)
+            ax.plot(cov, cur, color=col, lw=1.1, ls="--", label=lab)
+            continue
+        c = m["groups"][g]["selective_curve"]
+        mu, sd = np.array(c["mean"]), np.array(c["sd"])
+        ax.plot(c["coverage"], mu, color=col, lw=1.2, label=lab)
+        if np.isfinite(sd).all():
+            ax.fill_between(c["coverage"], mu - sd, mu + sd, color=col, alpha=0.2, lw=0)
+    ax.set_xlabel("Coverage (fraction of scenes acted on)")
+    ax.set_ylabel("Success on the scenes acted on")
+    ax.set_xlim(0.05, 1.0)
+    ax.set_ylim(0.55, 1.0)
+    ax.legend(loc="lower left", frameon=False, fontsize=5.8)
+    ax.text(-0.22, 1.04, "b", transform=ax.transAxes, fontsize=9, fontweight="bold")
+    save(fig, "fig4_comparison")
+
+
+def frontier(rows: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Upper-left envelope of (payload bits, top-1) points."""
+    pts = sorted((r["payload_bits"], r["top1_success"]) for r in rows)
+    xs, ys, best = [], [], -1.0
+    for x, y in pts:
+        if y > best:
+            xs.append(x)
+            ys.append(y)
+            best = y
+    return np.array(xs), np.array(ys)
+
+
+def fig5_payload() -> None:
+    """Decision quality versus payload for MSP and the outcome scorer."""
+    rm = json.loads((REPO / "results/sr/rate_dims_msp.json").read_text())
+    rd = json.loads((REPO / "results/sr/rate_dims_direct.json").read_text())
+    fig, axs = plt.subplots(1, 2, figsize=(180 * MM, 60 * MM), gridspec_kw={"wspace": 0.3})
+    ax = axs[0]
+    grid = np.geomspace(1, 200, 60)
+
+    def env(runs):
+        curves = []
+        for r in runs:
+            x, y = frontier(r["rows"])
+            curves.append(np.interp(np.log(grid), np.log(x), y, left=np.nan))
+        return np.array(curves)
+
+    sets = [("MSP (ours), beta 300", [v for k, v in rm.items() if k.startswith("msp_b300_d32")],
+             C_MSP), ("Outcome scorer + PCA", list(rd.values()), C_DIRECT)]
+    for lab, runs, col in sets:
+        if not runs:
+            continue
+        c = env(runs)
+        mu = np.nanmean(c, 0)
+        ax.plot(grid, mu, color=col, lw=1.3, label=f"{lab} (n={len(runs)})")
+        if len(runs) > 1:
+            sd = np.nanstd(c, 0, ddof=1)
+            ax.fill_between(grid, mu - sd, mu + sd, color=col, alpha=0.2, lw=0)
+    ax.set_xscale("log")
+    ax.set_xlabel("Payload per scene (bits, entropy coded)")
+    ax.set_ylabel("Top-1 grasp success")
+    ax.legend(loc="lower right", frameon=False)
+    ax.text(-0.2, 1.04, "a", transform=ax.transAxes, fontsize=9, fontweight="bold")
+    ax = axs[1]
+    betas = sorted({v["beta"] for k, v in rm.items() if "_d32_" in k})
+    for b in betas:
+        runs = [v for k, v in rm.items() if k.startswith(f"msp_b{b:g}_d32")]
+        c = env(runs)
+        ax.plot(grid, np.nanmean(c, 0), lw=1.0, label=f"beta {b:g} (n={len(runs)})",
+                color=plt.cm.viridis(np.log10(b) / 3.2))
+    ax.set_xscale("log")
+    ax.set_xlabel("Payload per scene (bits, entropy coded)")
+    ax.set_ylabel("Top-1 grasp success")
+    ax.legend(loc="lower right", frameon=False, fontsize=5.8)
+    ax.text(-0.2, 1.04, "b", transform=ax.transAxes, fontsize=9, fontweight="bold")
+    save(fig, "fig5_payload")
+
+
+FIGS = {"fig2": fig2_corpus, "fig3": fig3_pose_noise, "fig4": fig4_comparison,
+        "fig5": fig5_payload}
 
 
 def main() -> None:
