@@ -29,9 +29,20 @@ from msp.math.divergences import (
 )
 
 __all__ = [
-    "BetaSchedule", "DistortionTerms", "VIBTerms", "distortion", "rate", "vib_objective",
-    "AdaptiveConformalState", "conformal_quantile", "min_calibration_size",
-    "nonconformity_scores", "prediction_set",
-    "diagonal_gaussian_kl", "gaussian_nll", "kl_to_standard_normal", "log_normal_nll",
+    "AdaptiveConformalState",
+    "BetaSchedule",
+    "DistortionTerms",
+    "VIBTerms",
+    "conformal_quantile",
+    "diagonal_gaussian_kl",
+    "distortion",
+    "gaussian_nll",
+    "kl_to_standard_normal",
+    "log_normal_nll",
+    "min_calibration_size",
+    "nonconformity_scores",
+    "prediction_set",
+    "rate",
+    "vib_objective",
     "zero_inflated_lognormal_nll",
 ]
