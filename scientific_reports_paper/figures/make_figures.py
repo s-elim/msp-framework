@@ -109,6 +109,108 @@ def draw_scene(ax, b: dict, i: int, highlight: dict | None = None, half_w: float
 
 
 # ------------------------------------------------------------------------------------ fig 2
+def _box(ax, x, y, w, h, text, fc, ec, fs=6.3, weight="normal", tc="black"):
+    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.006,rounding_size=0.012",
+                                fc=fc, ec=ec, lw=0.8, transform=ax.transAxes))
+    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fs,
+            fontweight=weight, color=tc, transform=ax.transAxes)
+
+
+def _badge(ax, x, y, n, col):
+    from matplotlib.patches import Ellipse
+
+    asp = ax.figure.get_figheight() / ax.figure.get_figwidth()
+    ax.add_patch(Ellipse((x, y), 0.028 * asp, 0.028, color=col, transform=ax.transAxes,
+                         zorder=5))
+    ax.text(x, y, str(n), ha="center", va="center", fontsize=5.6, color="white",
+            fontweight="bold", transform=ax.transAxes, zorder=6)
+
+
+def _arrow(ax, x0, y0, x1, y1, col="black"):
+    ax.annotate("", xy=(x1, y1), xytext=(x0, y0), xycoords="axes fraction",
+                arrowprops={"arrowstyle": "-|>", "color": col, "lw": 0.9,
+                            "shrinkA": 0, "shrinkB": 0, "mutation_scale": 7})
+
+
+def fig1_overview() -> None:
+    """Two routes from one real observation to a grasp decision, and how outcomes are scored."""
+    b = load_split("test")
+    idx = np.nonzero(b["obj_id"].numpy() == 8)[0]
+    rng = np.random.default_rng(3)
+    mixed = [i for i in idx if 3 <= b["succ"][i].sum() <= 10]
+    i = int(rng.choice(mixed))
+    fig = plt.figure(figsize=(180 * MM, 74 * MM))
+    bg = fig.add_axes([0, 0, 1, 1])
+    bg.axis("off")
+    # observation
+    a1 = fig.add_axes([0.01, 0.2, 0.2, 0.58])
+    draw_scene(a1, b, i, show_all=False, highlight={})
+    T, K = b["T"][i].numpy().astype(float), b["K"][i].numpy().astype(float)
+    u0, v0 = float(b["crop"][i][0]), float(b["crop"][i][1])
+    for j in range(16):
+        pp, x = T[j, :3, 3], T[j, :3, 0]
+        a = project(K, pp - 0.035 * x) - [u0, v0]
+        c = project(K, pp + 0.035 * x) - [u0, v0]
+        a1.plot([a[0], c[0]], [a[1], c[1]], color="white", lw=1.6)
+        a1.plot([a[0], c[0]], [a[1], c[1]], color=OK["grey"], lw=0.8)
+    a1.set_xticks([])
+    a1.set_yticks([])
+    bg.text(0.11, 0.84, "Observation", ha="center", fontsize=7.5, fontweight="bold")
+    bg.text(0.11, 0.05, "real LINEMOD RGB-D crop\n+ 16 candidate grasps", ha="center",
+            fontsize=6, color="#444444")
+    # pose route
+    pc, pf = C_POSE, "#FDF1DA"
+    bg.add_patch(FancyBboxPatch((0.25, 0.53), 0.5, 0.36, boxstyle="round,pad=0.004,"
+                                "rounding_size=0.02", fc=pf, ec=pc, lw=1.0))
+    bg.text(0.265, 0.855, "Pose-then-plan", fontsize=7.2, fontweight="bold", color="#9A6A00")
+    _badge(bg, 0.30, 0.79, 1, pc)
+    _box(bg, 0.30, 0.67, 0.13, 0.12, "6D pose\nestimator", "white", pc)
+    _box(bg, 0.465, 0.67, 0.08, 0.12, "pose\n(R, t)", "white", pc)
+    _badge(bg, 0.595, 0.79, 2, pc)
+    _box(bg, 0.595, 0.67, 0.14, 0.12, "CAD mesh +\nsimulator +\nphysics prior", "white", pc,
+         fs=5.8)
+    _arrow(bg, 0.43, 0.73, 0.465, 0.73, pc)
+    _arrow(bg, 0.545, 0.73, 0.595, 0.73, pc)
+    bg.text(0.5, 0.575, "needs the object model and a physics simulator at decision time",
+            ha="center", fontsize=5.8, color="#9A6A00", style="italic")
+    # outcome route
+    mc, mf = C_MSP, "#DDF2EA"
+    bg.add_patch(FancyBboxPatch((0.25, 0.1), 0.5, 0.36, boxstyle="round,pad=0.004,"
+                                "rounding_size=0.02", fc=mf, ec=mc, lw=1.0))
+    bg.text(0.265, 0.425, "Manipulation-sufficient perception", fontsize=7.2,
+            fontweight="bold", color="#00684C")
+    _badge(bg, 0.30, 0.36, 1, mc)
+    _box(bg, 0.30, 0.24, 0.13, 0.12, "encoder\n$q_\\theta(z\\mid o)$", "white", mc)
+    _box(bg, 0.465, 0.24, 0.08, 0.12, "code $z$\n(few bits)", "white", mc, fs=5.8)
+    _badge(bg, 0.595, 0.36, 2, mc)
+    _box(bg, 0.595, 0.24, 0.14, 0.12, "outcome head\n$g_\\phi(z, a)$ for\nall candidates", "white",
+         mc, fs=5.8)
+    _arrow(bg, 0.43, 0.3, 0.465, 0.3, mc)
+    _arrow(bg, 0.545, 0.3, 0.595, 0.3, mc)
+    bg.text(0.5, 0.145, "trained on grasp outcomes; one payload scores every candidate",
+            ha="center", fontsize=5.8, color="#00684C", style="italic")
+    _arrow(bg, 0.215, 0.6, 0.3, 0.72, OK["grey"])
+    _arrow(bg, 0.215, 0.4, 0.3, 0.3, OK["grey"])
+    # outcome column
+    a3 = fig.add_axes([0.79, 0.2, 0.2, 0.58])
+    draw_scene(a3, b, i)
+    a3.set_xticks([])
+    a3.set_yticks([])
+    _arrow(bg, 0.745, 0.72, 0.785, 0.62, OK["grey"])
+    _arrow(bg, 0.745, 0.3, 0.785, 0.4, OK["grey"])
+    bg.text(0.89, 0.84, "Outcome (simulated)", ha="center", fontsize=7.5, fontweight="bold")
+    bg.text(0.89, 0.02, "MuJoCo lift on the scanned mesh at the\nannotated pose; friction, mass "
+            "and\ncentre of mass drawn per scene, unseen", ha="center", fontsize=5.6,
+            color="#444444")
+    h = [plt.Line2D([], [], color=C_SUCC, lw=1.2, label="lifted"),
+         plt.Line2D([], [], color=C_FAIL, lw=1.2, label="dropped"),
+         plt.Line2D([], [], ls="none", marker="o", ms=3, mfc="white", mec=OK["grey"],
+                    label="blocked")]
+    a3.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, -0.01), ncol=3,
+              frameon=False, fontsize=5.6, handlelength=1.2, columnspacing=0.8)
+    save(fig, "fig1_overview")
+
+
 def fig2_corpus() -> None:
     """LM-Grasp: real crops with simulated outcomes, per-object rates."""
     b = load_split("test")
@@ -352,7 +454,7 @@ def fig5_payload() -> None:
     save(fig, "fig5_payload")
 
 
-FIGS = {"fig2": fig2_corpus, "fig3": fig3_pose_noise, "fig4": fig4_comparison,
+FIGS = {"fig1": fig1_overview, "fig2": fig2_corpus, "fig3": fig3_pose_noise, "fig4": fig4_comparison,
         "fig5": fig5_payload}
 
 
