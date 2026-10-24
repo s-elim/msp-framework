@@ -166,6 +166,10 @@ def vlm_targets(name: str, a) -> tuple[torch.Tensor | None, torch.Tensor | None]
         t = t2
     elif a.vlm_control == "const":
         t = torch.full_like(t, 0.5)
+    if getattr(a, "vlm_mix_ens", False):  # V2: mean of the VLM and the C2 ensemble teacher
+        ens = torch.load(TEACHER, map_location="cpu", weights_only=False)["t"].float()
+        t = torch.where(miss[:, None], ens, 0.5 * (t + ens))
+        miss = torch.zeros_like(miss)
     teach = torch.where(miss[:, None], y["succ"].float(), t)
     aux = torch.where(miss[:, None], t[~miss].mean(), t)
     return (teach if a.distill > 0 else None), (aux if a.vlm_aux > 0 else None)
@@ -554,6 +558,8 @@ def main() -> None:
     ap.add_argument("--vlm-aux", type=float, default=0.0,
                     help="study 3 V1b: auxiliary VLM-score weight, relative to beta")
     ap.add_argument("--vlm-control", default="", choices=["", "const", "shuffle"])
+    ap.add_argument("--vlm-mix-ens", action="store_true",
+                    help="study 3 V2: distil the mean of the VLM and the C2 ensemble teacher")
     ap.add_argument("--design", action="store_true",
                     help="redesign study: write to results/sr/design and score val/calib only, "
                          "so no test number exists before the design is frozen")
@@ -576,6 +582,8 @@ def main() -> None:
         ap.error("--method is required")
     if a.distill > 0 and a.holdout and not a.vlm_labels:
         ap.error("the C2 teacher saw every object; it cannot be used with --holdout")
+    if a.vlm_mix_ens and (a.holdout or not a.distill):
+        ap.error("--vlm-mix-ens needs --distill and no --holdout (the ensemble saw every object)")
     if (a.vlm_aux > 0 or a.vlm_control) and not a.vlm_labels:
         ap.error("--vlm-aux/--vlm-control need --vlm-labels")
     if a.epochs <= SELECT_FROM:
@@ -597,6 +605,7 @@ def main() -> None:
     if holdout:  # held-out objects of the val split: the secondary selection check
         dsets["val_unseen"] = load_split("val", data, holdout, unseen=True, planner=pl)
     vl = ("_vlm" + (f"kd{a.distill:g}" if a.distill else "") + (f"aux{a.vlm_aux:g}" if a.vlm_aux else "")
+          + ("ens" if a.vlm_mix_ens else "")
           + (f"_{a.vlm_control}" if a.vlm_control else "")) if a.vlm_labels else ""
     variant = (vl + (f"_rank{a.rank:g}" if a.rank else "")
                + (f"_kd{a.distill:g}" if a.distill and not a.vlm_labels else "")
