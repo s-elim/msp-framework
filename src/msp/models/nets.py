@@ -5,8 +5,6 @@ inference procedure over them.
     A: BeliefEncoder   o          -> q_theta(z | o)      (a Belief, not a tuple)
     B: OutcomeHead     (z, a, g)  -> p_psi(y | z, a, g)  (an OutcomeDistribution)
 
-Plus the amortized acquisition network (Eq 18), which is not a third learned module in the
-formal sense -- it estimates a functional of A and B -- but does carry its own weights.
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from msp.belief import Belief, DiagonalGaussianBelief
 from msp.types import OutcomeDistribution
 
 __all__ = [
-    "AcquisitionNet",
     "Backbone",
     "BeliefEncoder",
     "MLPBackbone",
@@ -310,55 +307,3 @@ class OutcomeHead(nn.Module):
         """sigma_psi(z_k, a) for the full cross product. (B, K, Na). Feeds Eq 13/14."""
         dist = self.forward(z, actions, gripper=gripper)
         return dist.success_prob().squeeze(-1)
-
-
-# ======================================================================================
-# The amortized acquisition network (Eq 18)
-# ======================================================================================
-
-
-class AcquisitionNet(nn.Module):
-    """alpha_omega(o, b) ~= IG(b). Formalization Eq 18.
-
-    Trained by regression onto IG_true, which is obtained in simulation by RENDERING the
-    look-ahead observation o_b (Eq 17). At deployment nothing can be rendered -- the state is
-    unknown -- so this single forward pass replaces the entire look-ahead. That is what makes
-    Section 5 implementable without a generative observation model, i.e. without a world model.
-
-    THE `fitted` BUFFER IS NOT DECORATION. The audited repository shipped this network with no
-    loss, no target and no look-ahead, and then took an argmax over its randomly-initialized
-    output to steer a camera. `ActivePerception.select_view` refuses to run unless `fitted` is
-    True, and only the training loop sets it. A randomly-initialized acquisition net cannot be
-    used by accident.
-    """
-
-    def __init__(self, obs_feature_dim: int, n_views: int, hidden: int = 256) -> None:
-        super().__init__()
-        self.n_views = n_views
-        # The viewpoint is a discrete choice from a fixed ring, so it gets an embedding rather
-        # than a hand-rolled SE(3) featurization. If B ever becomes continuous, replace this
-        # embedding with the camera pose and nothing else changes.
-        self.view_embed = nn.Embedding(n_views, 32)
-        self.net = nn.Sequential(
-            nn.Linear(obs_feature_dim + 32, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1),
-        )
-        self.register_buffer("fitted", torch.tensor(False))
-
-    def forward(self, obs_features: Tensor, view_ids: Tensor) -> Tensor:
-        """obs_features: (B, F).  view_ids: (B, Nb) long.
-
-        Returns (B, Nb) -- NOT (B, Nb, 1). The trailing singleton is squeezed HERE, at the source,
-        because the audited selector called `argmax(dim=-1)` on a (B, Nb, 1) tensor, reduced over
-        the size-1 axis, and therefore always chose view 0. Returning the shape the caller actually
-        needs removes the opportunity to get it wrong.
-        """
-        if view_ids.dim() != 2:
-            raise ValueError(f"view_ids must be (B, Nb); got {tuple(view_ids.shape)}")
-        b, nb = view_ids.shape
-        e = self.view_embed(view_ids)  # (B, Nb, 32)
-        f = obs_features.unsqueeze(1).expand(b, nb, -1)  # (B, Nb, F)
-        return self.net(torch.cat([f, e], dim=-1)).squeeze(-1)  # (B, Nb)

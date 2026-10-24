@@ -15,7 +15,7 @@ Conventions
       `scripts/sr/check_lm_upright.py`). The simulator places the object upright on a table at
       z = 0 and lets it settle.
     * A grasp is a 4x4 TCP pose. The hand's local x axis is the closing direction and the
-      approach direction is the hand's local -z, as in `libero_sim`.
+      approach direction is the hand's local -z.
     * Physical parameters (friction, mass, centre of mass) are sampled per scene and are not
       observable in the image, by construction.
 """

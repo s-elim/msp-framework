@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "msp"
 version = "0.1.0"
-description = "Manipulation-Sufficient Perception."
+description = "Pose-posterior grasp planning and outcome scoring on LM-Grasp (LINEMOD RGB-D + simulated grasps)."
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.2",

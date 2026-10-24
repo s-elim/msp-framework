@@ -370,7 +370,6 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
                  m.get("loss/total", float("nan")), m.get("val/loss/total", float("nan")),
                  m.get("val/loss/rate_kl", float("nan")), bce)
         tr.epoch += 1
-    tr.save("last.pth")
     enc.load_state_dict(best_state[0])
     head.load_state_dict(best_state[1])
     scores = {split: score_split(enc, head, dsets[split], direct, k=32) for split in a.splits}
