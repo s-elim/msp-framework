@@ -1,0 +1,12 @@
+--method qcode --lam 0.1 --seed 0 --design
+--method qcode --lam 0.1 --seed 1 --design
+--method qcode --lam 0.1 --seed 2 --design
+--method qcode --lam 0.3 --seed 0 --design
+--method qcode --lam 0.3 --seed 1 --design
+--method qcode --lam 0.3 --seed 2 --design
+--method qcode --lam 1 --seed 0 --design
+--method qcode --lam 1 --seed 1 --design
+--method qcode --lam 1 --seed 2 --design
+--method qcode --lam 3 --seed 0 --design
+--method qcode --lam 3 --seed 1 --design
+--method qcode --lam 3 --seed 2 --design

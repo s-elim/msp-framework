@@ -42,6 +42,7 @@ from msp.models import OutcomeHead  # noqa: E402
 BITS = (1, 2, 3, 4, 6, 8)
 DIM_BITS = (2, 3, 4, 6)
 DIMS = (1, 2, 4, 8, 16, 32)
+EV = "test"  # evaluation split; --eval-split val for the blind redesign study
 T_SCALE = 10.0
 
 
@@ -76,7 +77,7 @@ def scores(head, mu, lv, actions, k: int = 32) -> np.ndarray:
 
 
 def dims_rows(head, sc, direct: bool, lat: int, acts, y, obj_te) -> list[dict]:
-    mu_c, mu_t = sc["calib"]["mu"].double(), sc["test"]["mu"].double()
+    mu_c, mu_t = sc["calib"]["mu"].double(), sc[EV]["mu"].double()
     if direct:
         mean = mu_c.mean(0)
         _, _, V = torch.linalg.svd(mu_c - mean, full_matrices=False)
@@ -111,10 +112,10 @@ def dims_rows(head, sc, direct: bool, lat: int, acts, y, obj_te) -> list[dict]:
         for b in DIM_BITS:
             qc, symc, L = quantize(enc_c, lo, hi, b)
             qt, symt, _ = quantize(enc_t, lo, hi, b)
-            s_te = scores(head, *dec(qt), acts["test"])
+            s_te = scores(head, *dec(qt), acts[EV])
             s_ca = scores(head, *dec(qc), acts["calib"])
-            mt = ranking_metrics(s_te, y["test"], obj_te)
-            c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
+            mt = ranking_metrics(s_te, y[EV], obj_te)
+            c = certificate(s_ca, y["calib"], s_te, y[EV], 0.1)
             rows.append({"dims": m, "bits_per_dim": b, "payload_bits": code_bits(symc, symt, L),
                          "within_scene_auc": mt["within_scene_auc"],
                          "top1_success": mt["top1_success"], "cert_coverage": c["coverage"],
@@ -123,14 +124,17 @@ def dims_rows(head, sc, direct: bool, lat: int, acts, y, obj_te) -> list[dict]:
 
 
 def main() -> None:
+    global EV
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", default="msp_b*_d32_s*")
     ap.add_argument("--data", default=str(REPO / "data/lm_grasp"))
     ap.add_argument("--out", default=str(REPO / "results/sr/rate.json"))
     ap.add_argument("--scheme", choices=["full", "dims"], default="full")
+    ap.add_argument("--eval-split", default="test", choices=["test", "val"])
     a = ap.parse_args()
+    EV = a.eval_split
     lab = {k: torch.load(Path(a.data) / f"{k}.pt", map_location="cpu", weights_only=False)
-           for k in ("calib", "test")}
+           for k in ("calib", EV)}
     acts = {}
     for k, v in lab.items():
         x = v["actions"].clone()
@@ -151,7 +155,7 @@ def main() -> None:
         direct = r["args"]["method"] == "direct"
         parts = ("mu",) if direct else ("mu", "logvar")
         x_cal = torch.cat([sc["calib"][p] for p in parts], -1)
-        x_te = torch.cat([sc["test"][p] for p in parts], -1)
+        x_te = torch.cat([sc[EV][p] for p in parts], -1)
 
         def split(x):
             return (x[:, :lat], None) if direct else (x[:, :lat], x[:, lat:])
@@ -162,24 +166,24 @@ def main() -> None:
             res[d.name] = {"method": r["args"]["method"], "beta": r["args"]["beta"],
                            "latent": lat, "seed": r["args"]["seed"],
                            "rows": dims_rows(head, sc, direct, lat, acts, y,
-                                             lab["test"]["obj_id"].numpy())}
+                                             lab[EV]["obj_id"].numpy())}
             print(d.name, "dims done", flush=True)
             continue
         rows = []
-        s_te = scores(head, *split(x_te), acts["test"])
+        s_te = scores(head, *split(x_te), acts[EV])
         s_ca = scores(head, *split(x_cal), acts["calib"])
-        m = ranking_metrics(s_te, y["test"], lab["test"]["obj_id"].numpy())
-        c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
+        m = ranking_metrics(s_te, y[EV], lab[EV]["obj_id"].numpy())
+        c = certificate(s_ca, y["calib"], s_te, y[EV], 0.1)
         rows.append({"bits_per_dim": 32, "payload_bits": len(parts) * lat * 32.0,
                      "within_scene_auc": m["within_scene_auc"], "top1_success": m["top1_success"],
                      "cert_coverage": c["coverage"], "cert_fraction": c["certified_fraction"]})
         for b in BITS:
             qc, symc, L = quantize(x_cal, lo, hi, b)
             qt, symt, _ = quantize(x_te, lo, hi, b)
-            s_te = scores(head, *split(qt), acts["test"])
+            s_te = scores(head, *split(qt), acts[EV])
             s_ca = scores(head, *split(qc), acts["calib"])
-            m = ranking_metrics(s_te, y["test"], lab["test"]["obj_id"].numpy())
-            c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
+            m = ranking_metrics(s_te, y[EV], lab[EV]["obj_id"].numpy())
+            c = certificate(s_ca, y["calib"], s_te, y[EV], 0.1)
             rows.append({"bits_per_dim": b, "payload_bits": code_bits(symc, symt, L),
                          "fixed_width_bits": len(parts) * lat * b,
                          "within_scene_auc": m["within_scene_auc"],

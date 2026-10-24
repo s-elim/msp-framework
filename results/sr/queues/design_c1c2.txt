@@ -1,0 +1,12 @@
+--method msp --rank 1 --seed 0 --design
+--method direct --rank 1 --seed 0 --design
+--method msp --rank 1 --seed 1 --design
+--method direct --rank 1 --seed 1 --design
+--method msp --rank 1 --seed 2 --design
+--method direct --rank 1 --seed 2 --design
+--method msp --distill 0.5 --seed 0 --design
+--method direct --distill 0.5 --seed 0 --design
+--method msp --distill 0.5 --seed 1 --design
+--method direct --distill 0.5 --seed 1 --design
+--method msp --distill 0.5 --seed 2 --design
+--method direct --distill 0.5 --seed 2 --design

@@ -1,0 +1,4 @@
+--make-teacher
+--method msp --rank 1 --seed 99 --epochs 6 --design --tag smoke_rank
+--method direct --distill 0.5 --seed 99 --epochs 6 --design --tag smoke_kd
+--method qcode --lam 1 --seed 99 --epochs 6 --design --tag smoke_qcode
