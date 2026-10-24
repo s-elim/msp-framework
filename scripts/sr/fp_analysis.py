@@ -108,6 +108,30 @@ def main() -> None:
         res["fp_add_err_bins"][f"[{lo}, {hi}) d"] = strat((err_d >= lo) & (err_d < hi))
     res["fp_add_err_over_diam_median"] = float(np.median(err_d))
 
+    # selective success at 25% coverage: scene-resampling bootstrap of the difference
+    from evaluate_lm import selective
+
+    fps = torch.load(PLAN / "fpose_p4_test.pt", weights_only=False)["s"].numpy()
+    ens = np.mean(ds, 0)
+
+    def sel25(s, idx):
+        r = np.arange(len(idx))
+        ip = pick(s[idx])
+        return selective(s[idx][r, ip], y[idx][r, ip], 0.25)
+
+    rng = np.random.default_rng(0)
+    full = np.arange(len(y))
+    res["sel25"] = {"ensemble5_s0-4": sel25(ens, full), "direct_s0": sel25(ds[0], full),
+                    "fpose_plan": sel25(fps, full)}
+    for name, s_ in (("ensemble5_s0-4", ens), ("direct_s0", ds[0])):
+        diffs = []
+        for _ in range(2000):
+            idx = rng.integers(0, len(y), len(y))
+            diffs.append(sel25(s_, idx) - sel25(fps, idx))
+        res["sel25"][f"{name} - fpose_plan"] = {
+            "diff": res["sel25"][name] - res["sel25"]["fpose_plan"],
+            "ci95": [float(x) for x in np.percentile(diffs, [2.5, 97.5])]}
+
     # pose payload
     tc, tt = ca["t"].double().numpy() * 1000, te["t"].double().numpy() * 1000  # mm
     rc = np.degrees(rotvec(ca["R"].double().numpy()))
@@ -119,7 +143,7 @@ def main() -> None:
                                     "per_axis_sd": st / np.sqrt(12)})
     res["pose_payload_float32_bits"] = 6 * 32
     Path(a.out).write_text(json.dumps(res, indent=1))
-    print(json.dumps({k: res[k] for k in ("overall", "symmetry", "visib_tertile",
+    print(json.dumps({k: res[k] for k in ("sel25", "overall", "symmetry", "visib_tertile",
                                            "diameter_tertile", "fp_add_err_bins",
                                            "pose_payload")}, indent=1))
 
