@@ -47,6 +47,7 @@ def run(a) -> None:
                    weights_only=False)
     oid, iid = b["obj_id"].numpy(), b["im_id"].numpy()
     idx = np.array_split(np.arange(len(oid)), a.n_shards)[a.shard]
+    idx = np.array_split(idx, a.n_sub)[a.sub]
     if a.limit:  # smoke test: a few scenes of each object, written under a smoke_ name
         idx = np.concatenate([idx[oid[idx] == o][:a.limit] for o in np.unique(oid[idx])])
     root = REPO / "data/lm"
@@ -54,9 +55,23 @@ def run(a) -> None:
     glctx = dr.RasterizeCudaContext()
     est, cur = None, None
     scorer, refiner = ScorePredictor(), PoseRefinePredictor()
+    name = f"smoke_{a.split}" if a.limit else f"{a.split}_{a.shard}of{a.n_shards}"
+    if a.n_sub > 1:
+        name += f"_{a.sub}of{a.n_sub}"
+    OUT.mkdir(parents=True, exist_ok=True)
+    part = OUT / f"partial_{name}.npz"  # periodic checkpoint, so a time limit loses < 100 scenes
     poses = np.zeros((len(idx), 4, 4), np.float64)
     secs = np.zeros(len(idx))
+    start = 0
+    if part.exists():
+        z = np.load(part)
+        assert np.array_equal(z["idx"], idx), f"{part}: index mismatch"
+        start = int(z["n_done"])
+        poses[:start], secs[:start] = z["poses"][:start], z["secs"][:start]
+        log.info("resuming %s at %d/%d", name, start, len(idx))
     for n, i in enumerate(idx):
+        if n < start:
+            continue
         o, im = int(oid[i]), int(iid[i])
         if o != cur:
             mesh = trimesh.load(root / f"models/obj_{o:06d}.ply", force="mesh")
@@ -84,12 +99,12 @@ def run(a) -> None:
         poses[n] = est.register(K=K, rgb=rgb, depth=depth, ob_mask=mask, ob_id=o, iteration=5)
         secs[n] = time.time() - t0
         if n % 50 == 0:
-            log.info("%s shard %d: %d/%d obj %d im %d %.2fs", a.split, a.shard, n, len(idx), o,
-                     im, secs[n])
-    OUT.mkdir(parents=True, exist_ok=True)
-    name = f"smoke_{a.split}" if a.limit else f"{a.split}_{a.shard}of{a.n_shards}"
+            log.info("%s: %d/%d obj %d im %d %.2fs", name, n, len(idx), o, im, secs[n])
+        if n % 100 == 99:
+            np.savez(part, idx=idx, poses=poses, secs=secs, n_done=n + 1)
     np.savez(OUT / f"{name}.npz", idx=idx, poses=poses, secs=secs,
              gpu=torch.cuda.get_device_name(0))
+    part.unlink(missing_ok=True)
     log.info("done %s shard %d: %d scenes, median %.2fs/scene", a.split, a.shard, len(idx),
              float(np.median(secs)))
 
@@ -99,7 +114,7 @@ def merge() -> None:
 
     scores, secs = {}, []
     for split in ("train", "val", "calib", "test"):
-        parts = sorted(OUT.glob(f"{split}_*of*.npz"))
+        parts = sorted(OUT.glob(f"{split}_*of*.npz"))  # shards and sub-shards; idx disjoint
         if not parts:
             continue
         n = torch.load(REPO / "data/lm_grasp" / f"{split}.pt", map_location="cpu",
@@ -127,6 +142,8 @@ if __name__ == "__main__":
     ap.add_argument("--split", default="test")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--n-shards", type=int, default=1)
+    ap.add_argument("--sub", type=int, default=0, help="sub-shard of --shard (finer split)")
+    ap.add_argument("--n-sub", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0, help="smoke test: first N scenes per object")
     ap.add_argument("--merge", action="store_true")
     a = ap.parse_args()
