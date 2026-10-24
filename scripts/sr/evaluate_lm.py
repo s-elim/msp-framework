@@ -167,7 +167,13 @@ COMPARISONS = (("msp_b300_d32", "direct"), ("msp_b300_d32", "gqcnn"), ("direct",
                ("ensemble5", "direct"), ("ensemble5", "msp_b300_d32"),
                ("direct", "plan:pose_p4"), ("msp_b300_d32", "plan:pose_p4"),
                ("plan:fpose_p4", "direct"), ("plan:fpose_p4", "ensemble5"),
-               ("plan:gt_p4", "plan:fpose_p4"))
+               ("plan:gt_p4", "plan:fpose_p4"),
+               ("direct_plfpose", "plan:fpose_p4"), ("direct_plfpose", "ensemble5"),
+               ("direct_plfpose", "direct"), ("msp_b300_d32_plfpose", "direct_plfpose"),
+               ("plan:gt_p4", "direct_plfpose"),
+               ("ho:direct_plfpose", "ho:plan:fpose_p4"), ("ho:direct_plfpose", "ho:direct"),
+               ("ho:direct", "ho:gqcnn"), ("ho:direct_plfpose", "ho:ensemble5_ho"))
+HOLD = "1,6,9,15"  # the held-out object set of the unseen-object protocol
 
 
 def top1_ok(s: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -278,6 +284,8 @@ def main() -> None:
             row |= score_row(s_te, s_ca, yt, yc, ot, v_te)
             if not held:
                 oks[name] = top1_ok(s_te, yt)
+            elif held == HOLD:
+                oks["ho:" + name] = top1_ok(s_te, yt)
             if "logvar" in sc["test"] and r["args"]["method"] == "msp":
                 mu, lv = sc["test"]["mu"], sc["test"]["logvar"]
                 kl = 0.5 * (lv.exp() + mu ** 2 - 1 - lv).sum(-1)
@@ -304,11 +312,29 @@ def main() -> None:
         res["runs"][name] = row
         oks[name] = top1_ok(st.mean(0), y["test"])
 
+    # held-out-object deep ensemble: direct seeds 0-4 trained without objects HOLD
+    files = [Path(a.runs) / f"direct_ho{HOLD.replace(',', '-')}_s{k}" / "scores.pt"
+             for k in range(5)]
+    if all(f.exists() for f in files):
+        sc = [torch.load(f, map_location="cpu", weights_only=False)["scores"] for f in files]
+        st = np.stack([x["test"]["s"].numpy() for x in sc])
+        scal = np.stack([x["calib"]["s"].numpy() for x in sc]).mean(0)
+        hs = [int(x) for x in HOLD.split(",")]
+        kt, kc = np.isin(obj["test"], hs), np.isin(obj["calib"], hs)
+        row = {"method": "ensemble5", "seed": 0, "holdout": HOLD,
+               "members": [f.parent.name for f in files]}
+        row |= score_row(st.mean(0), scal, y["test"][kt], y["calib"][kc], obj["test"][kt],
+                         st.var(0))
+        res["runs"]["ensemble5_ho_e0"] = row
+        oks["ho:ensemble5_ho_e0"] = top1_ok(st.mean(0), y["test"][kt])
+
     for p in sorted(Path(a.plan).glob("*_test.pt")):
         tag = p.name[: -len("_test.pt")]
         s_te = torch.load(p, map_location="cpu", weights_only=False)["s"].numpy()
         row = ranking_metrics(s_te, y["test"], obj["test"])
         oks["plan:" + tag] = top1_ok(s_te, y["test"])
+        oks["ho:plan:" + tag] = top1_ok(s_te, y["test"])[np.isin(obj["test"],
+                                                                [int(x) for x in HOLD.split(",")])]
         pc = Path(a.plan) / f"{tag}_calib.pt"
         if pc.exists():
             s_ca = torch.load(pc, map_location="cpu", weights_only=False)["s"].numpy()
@@ -323,6 +349,8 @@ def main() -> None:
 
     # seed groups: strip the trailing _s<seed>
     def group_of(name: str) -> str:
+        if name.startswith("ho:"):
+            return "ho:" + group_of(name[3:]).replace("_ho" + HOLD.replace(",", "-"), "")
         m = re.match(r"direct_s(\d+)$", name)
         if m and int(m.group(1)) >= 5:
             return "direct_member"
@@ -334,7 +362,11 @@ def main() -> None:
         groups[group_of(name)].append(row)
         if name in oks:
             gok[group_of(name)].append(oks[name])
+        if "ho:" + name in oks:
+            gok[group_of("ho:" + name)].append(oks["ho:" + name])
     for name, v in oks.items():
+        if name.startswith("ho:plan:"):
+            gok[name].append(v)
         if name.startswith("plan:"):
             m = re.match(r"plan:(pose.*)_s\d+(_p\d+)$", name)
             gok["plan:" + m.group(1) + m.group(2) if m else name].append(v)
