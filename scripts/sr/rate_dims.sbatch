@@ -6,5 +6,5 @@
 cd /nas/Selim/selim_sarowar/msp_framework; export HOME=/nas/Selim/selim_sarowar; source scripts/sr/env.sh
 export OMP_NUM_THREADS=16
 echo "start $(date -Is)"
-$PY scripts/sr/rate_eval.py --scheme dims --runs "$1" --out "$2" || echo "FAILED: $1"
+$PY scripts/sr/rate_eval.py --scheme dims --runs "$1" --out "$2" "${@:3}" || echo "FAILED: $1"
 echo "end $(date -Is)"
