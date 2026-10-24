@@ -38,6 +38,9 @@ from msp.math.conformal import conformal_quantile, nonconformity_scores, predict
 
 LM_SYMMETRIC = (10, 11)
 ALPHAS = (0.05, 0.1, 0.2)
+COVERAGES = tuple(np.round(np.linspace(0.05, 1.0, 20), 2))
+ENSEMBLES = {"ensemble5_e0": range(0, 5), "ensemble5_e1": range(5, 10),
+             "ensemble5_e2": range(10, 15)}  # deep ensembles of direct-scorer seeds
 
 
 def jitter(shape, seed: int = 12345) -> np.ndarray:
@@ -124,6 +127,7 @@ def ranking_metrics(s: np.ndarray, y: np.ndarray, obj: np.ndarray, conf: np.ndar
            "pooled_auc": auc_1d(s.reshape(-1), y.reshape(-1)),
            "top1_success": float(ok.mean()),
            "selective_25": selective(conf, ok, 0.25), "selective_50": selective(conf, ok, 0.5),
+           "selective_curve": [selective(conf, ok, c) for c in COVERAGES],
            "per_object": {}}
     for o in np.unique(obj):
         m = obj == o
@@ -133,6 +137,25 @@ def ranking_metrics(s: np.ndarray, y: np.ndarray, obj: np.ndarray, conf: np.ndar
                                      "base_rate": float(y[m].mean()),
                                      "oracle": float(y[m].max(1).mean())}
     return out
+
+
+def score_row(s_te, s_ca, yt, yc, ot, v_te=None) -> dict:
+    """Ranking, selective and certificate metrics of one score matrix. With a per-candidate
+    variance v (MSP posterior draws or ensemble members), selective execution is also scored
+    with the lower confidence bound s - sd of the selected candidate."""
+    row = ranking_metrics(s_te, yt, ot)
+    if v_te is not None:
+        ip = pick(s_te)
+        r = np.arange(len(s_te))
+        lcb = s_te[r, ip] - np.sqrt(v_te[r, ip])
+        ok = yt[r, ip]
+        row["selective_lcb_25"] = selective(lcb, ok, 0.25)
+        row["selective_lcb_50"] = selective(lcb, ok, 0.5)
+        row["selective_lcb_curve"] = [selective(lcb, ok, c) for c in COVERAGES]
+    for al in ALPHAS:
+        row[f"cert_{al}"] = certificate(s_ca, yc, s_te, yt, al)
+        row[f"pairwise_{al}"] = pairwise_certificate(s_ca, yc, s_te, yt, al)
+    return row
 
 
 def model_points(root: Path, n: int = 1000) -> dict[int, np.ndarray]:
@@ -223,10 +246,8 @@ def main() -> None:
                "wall_seconds": r["wall_seconds"]}
         if "s" in sc["test"]:
             s_te, s_ca = sc["test"]["s"].numpy(), sc["calib"]["s"].numpy()
-            row |= ranking_metrics(s_te, yt, ot)
-            for al in ALPHAS:
-                row[f"cert_{al}"] = certificate(s_ca, yc, s_te, yt, al)
-                row[f"pairwise_{al}"] = pairwise_certificate(s_ca, yc, s_te, yt, al)
+            v_te = sc["test"]["v"].numpy() if "v" in sc["test"] else None
+            row |= score_row(s_te, s_ca, yt, yc, ot, v_te)
             if "logvar" in sc["test"] and r["args"]["method"] == "msp":
                 mu, lv = sc["test"]["mu"], sc["test"]["logvar"]
                 kl = 0.5 * (lv.exp() + mu ** 2 - 1 - lv).sum(-1)
@@ -238,6 +259,18 @@ def main() -> None:
                 sc["test"]["R_hat"].double().numpy(), sc["test"]["t_hat"].double().numpy(),
                 lab["test"]["R"].double().numpy(), lab["test"]["t"].double().numpy(),
                 obj["test"], pts, diam).items() if k != "add_err_m"}
+        res["runs"][name] = row
+
+    for name, seeds in ENSEMBLES.items():
+        files = [Path(a.runs) / f"direct_s{k}" / "scores.pt" for k in seeds]
+        if not all(f.exists() for f in files):
+            continue
+        sc = [torch.load(f, map_location="cpu", weights_only=False)["scores"] for f in files]
+        st = np.stack([x["test"]["s"].numpy() for x in sc])
+        scal = np.stack([x["calib"]["s"].numpy() for x in sc]).mean(0)
+        row = {"method": "ensemble5", "seed": int(name[-1]), "holdout": "",
+               "members": [f.parent.name for f in files]}
+        row |= score_row(st.mean(0), scal, y["test"], y["calib"], obj["test"], st.var(0))
         res["runs"][name] = row
 
     for p in sorted(Path(a.plan).glob("*_test.pt")):
@@ -259,15 +292,21 @@ def main() -> None:
     # seed groups: strip the trailing _s<seed>
     groups = defaultdict(list)
     for name, row in res["runs"].items():
-        groups[re.sub(r"_s\d+$", "", name)].append(row)
+        groups[re.sub(r"_(s|e)\d+$", "", name)].append(row)
     for name, row in res["plan"].items():
         m = re.match(r"(pose.*)_s\d+(_p\d+)$", name)
         if m:
             groups["plan:" + m.group(1) + m.group(2)].append(row)
     keys = ("within_scene_auc", "pooled_auc", "top1_success", "selective_25", "selective_50")
     for g, rows in groups.items():
-        k = keys + tuple(x for x in ("rate_nats", "add_01d") if x in rows[0])
+        k = keys + tuple(x for x in ("rate_nats", "add_01d", "selective_lcb_25",
+                                     "selective_lcb_50") if x in rows[0])
         out = agg(rows, k)
+        for c in ("selective_curve", "selective_lcb_curve"):
+            if c in rows[0]:
+                v = np.array([r[c] for r in rows], float)
+                out[c] = {"coverage": list(COVERAGES), "mean": v.mean(0).tolist(),
+                          "sd": (v.std(0, ddof=1) if len(v) > 1 else v[0] * np.nan).tolist()}
         for al in ALPHAS:
             if f"cert_{al}" in rows[0]:
                 for f in ("coverage", "certified_fraction", "certified_precision"):

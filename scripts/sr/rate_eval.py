@@ -7,6 +7,10 @@ test symbols under per-dimension symbol frequencies estimated on the calibration
 Decisions are recomputed from the dequantized belief with the trained head, and the
 certificate is recalibrated on dequantized calibration beliefs.
 
+Direct-scorer runs (`--runs 'direct_s*'`) get the same treatment with their deterministic code:
+only mu is transmitted, and decisions are made at z = mu, so both methods are compared at
+matched payloads under the same quantizer and entropy-code estimate.
+
     python scripts/sr/rate_eval.py --runs 'msp_b*_d32_s*' --out results/sr/rate.json
 """
 
@@ -50,11 +54,15 @@ def code_bits(sym_cal: torch.Tensor, sym_te: torch.Tensor, L: int) -> float:
 
 @torch.no_grad()
 def scores(head, mu, lv, actions, k: int = 32) -> np.ndarray:
+    """MSP: posterior-mean success over k draws; lv=None: direct scorer at z = mu."""
     torch.manual_seed(0)
     out = []
     for i in range(0, len(mu), 256):
-        b = DiagonalGaussianBelief(mu[i:i + 256], lv[i:i + 256])
-        out.append(head.success_probs(b.rsample(k), actions[i:i + 256]).mean(1))
+        if lv is None:
+            z = mu[i:i + 256].unsqueeze(1)
+        else:
+            z = DiagonalGaussianBelief(mu[i:i + 256], lv[i:i + 256]).rsample(k)
+        out.append(head.success_probs(z, actions[i:i + 256]).mean(1))
     return torch.cat(out).numpy()
 
 
@@ -77,39 +85,45 @@ def main() -> None:
         if not (d / "scores.pt").exists() or "_ho" in d.name:
             continue
         r = torch.load(d / "scores.pt", map_location="cpu", weights_only=False)
-        lat = r["args"]["latent"]
+        lat = r["args"].get("latent", 32)
         head = OutcomeHead(latent_dim=lat, action_dim=9, gripper_dim=0, hidden=256)
         ck = torch.load(d / "best.pth", map_location="cpu", weights_only=False)
         head.load_state_dict(ck["head"])
         head.eval()
         sc = r["scores"]
-        x_cal = torch.cat([sc["calib"]["mu"], sc["calib"]["logvar"]], -1)
-        x_te = torch.cat([sc["test"]["mu"], sc["test"]["logvar"]], -1)
+        direct = r["args"]["method"] == "direct"
+        parts = ("mu",) if direct else ("mu", "logvar")
+        x_cal = torch.cat([sc["calib"][p] for p in parts], -1)
+        x_te = torch.cat([sc["test"][p] for p in parts], -1)
+
+        def split(x):
+            return (x[:, :lat], None) if direct else (x[:, :lat], x[:, lat:])
+
         lo = torch.quantile(x_cal, 0.01, dim=0)
         hi = torch.quantile(x_cal, 0.99, dim=0)
         rows = []
-        s_te = scores(head, sc["test"]["mu"], sc["test"]["logvar"], acts["test"])
-        s_ca = scores(head, sc["calib"]["mu"], sc["calib"]["logvar"], acts["calib"])
+        s_te = scores(head, *split(x_te), acts["test"])
+        s_ca = scores(head, *split(x_cal), acts["calib"])
         m = ranking_metrics(s_te, y["test"], lab["test"]["obj_id"].numpy())
         c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
-        rows.append({"bits_per_dim": 32, "payload_bits": 2 * lat * 32.0,
+        rows.append({"bits_per_dim": 32, "payload_bits": len(parts) * lat * 32.0,
                      "within_scene_auc": m["within_scene_auc"], "top1_success": m["top1_success"],
                      "cert_coverage": c["coverage"], "cert_fraction": c["certified_fraction"]})
         for b in BITS:
             qc, symc, L = quantize(x_cal, lo, hi, b)
             qt, symt, _ = quantize(x_te, lo, hi, b)
-            s_te = scores(head, qt[:, :lat], qt[:, lat:], acts["test"])
-            s_ca = scores(head, qc[:, :lat], qc[:, lat:], acts["calib"])
+            s_te = scores(head, *split(qt), acts["test"])
+            s_ca = scores(head, *split(qc), acts["calib"])
             m = ranking_metrics(s_te, y["test"], lab["test"]["obj_id"].numpy())
             c = certificate(s_ca, y["calib"], s_te, y["test"], 0.1)
             rows.append({"bits_per_dim": b, "payload_bits": code_bits(symc, symt, L),
-                         "fixed_width_bits": 2 * lat * b,
+                         "fixed_width_bits": len(parts) * lat * b,
                          "within_scene_auc": m["within_scene_auc"],
                          "top1_success": m["top1_success"], "cert_coverage": c["coverage"],
                          "cert_fraction": c["certified_fraction"]})
             print(d.name, b, round(rows[-1]["payload_bits"], 1),
                   round(m["within_scene_auc"], 3), round(m["top1_success"], 3), flush=True)
-        res[d.name] = {"beta": r["args"]["beta"], "latent": lat, "seed": r["args"]["seed"],
+        res[d.name] = {"method": r["args"]["method"], "beta": r["args"]["beta"], "latent": lat, "seed": r["args"]["seed"],
                        "rows": rows}
     Path(a.out).write_text(json.dumps(res, indent=1))
 
