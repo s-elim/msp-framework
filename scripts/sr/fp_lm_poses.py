@@ -98,7 +98,7 @@ def merge() -> None:
     import torch
 
     scores, secs = {}, []
-    for split in ("val", "calib", "test"):
+    for split in ("train", "val", "calib", "test"):
         parts = sorted(OUT.glob(f"{split}_*of*.npz"))
         if not parts:
             continue
