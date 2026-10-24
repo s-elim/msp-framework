@@ -1,0 +1,12 @@
+{
+ "model": "gemini-robotics-er-2-preview",
+ "split": "val",
+ "n": 1679,
+ "parsed": 1662,
+ "usd_total": 6.587811,
+ "usd_per_call": 0.003923651578320429,
+ "tokens_in_mean": 1354.0,
+ "tokens_out_mean": 513.9303156640858,
+ "latency_median_s": 5.537869691848755,
+ "cumulative_usd": 6.99881275
+}
