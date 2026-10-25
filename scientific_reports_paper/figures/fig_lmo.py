@@ -1,12 +1,14 @@
-"""Figs. 1 and 6: whole LM-O scenes with every annotated object (results/sr/lmo/lmo_eval.pt).
+"""Fig. 6 and the scene panel of Fig. 1: whole LM-O scenes with every annotated object
+(results/sr/lmo/lmo_eval.pt).
 
     $PY scientific_reports_paper/figures/fig_lmo.py
 
-Frame choice (fixed rule, Methods): rank frames by the number of objects whose posterior choice
-succeeds where the point-estimate choice fails; the teaser uses the top frame, the qualitative
-figure the next two frames at least 20 frames apart, plus the frame with the most objects whose
-posterior choice fails where the point estimate succeeds. Image panels show the scene region
-that contains every annotated object (all objects, never a single-object crop).
+Frame choice (fixed rule, Methods): rank frames by the number of objects whose posterior
+choice succeeds where the point-estimate choice fails; Fig. 6 shows the top two frames of that
+ranking (at least 20 frames apart) and the frame with the most objects whose posterior choice
+fails where the point estimate succeeds. Image panels show the scene region that contains every
+annotated object (all objects, never a single-object crop). Fig. 1 picks its example in
+fig_teaser.py.
 """
 
 from __future__ import annotations
@@ -30,8 +32,6 @@ from common import (
     _halo,
     bbox_corners,
     draw_gripper,
-    metrics,
-    panel_label,
     pick,
     project,
     save,
@@ -62,7 +62,7 @@ def outcomes() -> tuple[np.ndarray, np.ndarray]:
     return y[rr, picks()["s_point"]], y[rr, picks()["s_post"]]
 
 
-def choose_frames() -> tuple[int, list[int]]:
+def choose_frames() -> list[int]:
     ok_p, ok_u = outcomes()
     im = np.array([r["im"] for r in rows()])
     frames = np.unique(im)
@@ -72,10 +72,10 @@ def choose_frames() -> tuple[int, list[int]]:
     for f in frames[np.lexsort((frames, -wins))]:
         if all(abs(int(f) - c) >= 20 for c in chosen):
             chosen.append(int(f))
-        if len(chosen) == 3:
+        if len(chosen) == 2:
             break
     worst = int(frames[np.lexsort((frames, -loss))][0])
-    return chosen[0], chosen[1:3] + ([worst] if worst not in chosen else [])
+    return chosen + ([worst] if worst not in chosen else [])
 
 
 class Frame:
@@ -234,42 +234,6 @@ def _legend(fig: plt.Figure, y: float) -> None:
                loc="lower center", bbox_to_anchor=(0.5, y), handlelength=1.8, columnspacing=1.4)
 
 
-def teaser(im: int, name: str = "fig1_teaser") -> None:
-    fr = Frame(im)
-    fig = plt.figure(figsize=(180 * MM, 104 * MM))
-    gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.42], wspace=0.03, hspace=0.04,
-                          left=0.0, right=1.0, top=0.97, bottom=0.07)
-    a = fig.add_subplot(gs[0, 0])
-    fr.show(a)
-    fr.boxes(a)
-    b = fig.add_subplot(gs[0, 1])
-    fr.cloud(b)
-    c = fig.add_subplot(gs[1, 0])
-    fr.show(c, dim=0.3)
-    fr.grasps(c, ("s_point",))
-    d = fig.add_subplot(gs[1, 1])
-    fr.show(d, dim=0.3)
-    fr.grasps(d, ("s_post",))
-    e = fig.add_subplot(gs[:, 2])
-    pos = e.get_position()
-    e.set_position([pos.x0 + 0.06, pos.y0 + 0.16, pos.width - 0.07, pos.height - 0.22])
-    m = metrics()["plan"]
-    vals = [m["fpose_p4"]["top1_success"], m["fposeU1_s0_p4"]["top1_success"],
-            m["gt_p4"]["top1_success"]]
-    e.bar([0, 1, 2], vals, color=[ORANGE, TEAL, "white"], edgecolor=[ORANGE, TEAL, GREY],
-          hatch=["", "", "////"], lw=0.8, width=0.72)
-    for x, v in enumerate(vals):
-        e.text(x, v + 0.003, f"{v:.3f}", ha="center", va="bottom", fontsize=5.8)
-    e.set_ylim(0.75, 0.88)
-    e.set_xticks([0, 1, 2], ["point", "posterior", "annotated"], rotation=40, ha="right")
-    e.set_ylabel("top-1 success", labelpad=1)
-    for ax_, lab in zip((a, b, c, d), "abcd", strict=True):
-        panel_label(ax_, lab, x=0.02, y=0.98)
-    panel_label(e, "e", x=-0.25, y=1.02)
-    _legend(fig, 0.0)
-    save(fig, name, jpeg=True)
-
-
 def qualitative(frames: list[int], name: str = "fig6_qualitative") -> None:
     fig = plt.figure(figsize=(180 * MM, 46 * MM * len(frames) + 6 * MM))
     gs = fig.add_gridspec(len(frames), 3, wspace=0.02, hspace=0.03, left=0, right=1,
@@ -289,7 +253,4 @@ def qualitative(frames: list[int], name: str = "fig6_qualitative") -> None:
 
 
 if __name__ == "__main__":
-    top, rest = choose_frames()
-    print("teaser frame", top, "qualitative frames", rest)
-    teaser(top)
-    qualitative(rest)
+    qualitative(choose_frames())

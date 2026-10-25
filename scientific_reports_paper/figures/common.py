@@ -157,8 +157,8 @@ BOX_EDGES = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0,
 
 def project(K: np.ndarray, P: np.ndarray) -> np.ndarray:
     """(N, 3) camera-frame points -> (N, 2) pixels."""
-    return np.stack([K[0, 0] * P[:, 0] / P[:, 2] + K[0, 2], K[1, 1] * P[:, 1] / P[:, 2] + K[1, 2]],
-                    1)
+    return np.stack([K[0, 0] * P[:, 0] / P[:, 2] + K[0, 2],
+                     K[1, 1] * P[:, 1] / P[:, 2] + K[1, 2]], 1)
 
 
 class Scene:
@@ -287,15 +287,17 @@ def _halo() -> list:
 def cloud_panel(ax: plt.Axes, sc: Scene, boxes: list[tuple[np.ndarray, np.ndarray, str, float,
                                                             float, str]],
                 grippers: list[tuple[int, str]] = (), elev: float = 28.0,
-                azim: float = -35.0) -> None:
-    """3D view of the depth point cloud with pose boxes and chosen grippers."""
+                azim: float = -35.0, shade: float = 1.0) -> None:
+    """3D view of the depth point cloud with pose boxes and chosen grippers; `shade` < 1
+    darkens the object points (white objects on a white page)."""
     P, C, on = sc.cloud()
     Rv, c = sc.view(elev, azim)
     Q = to_view(P, Rv, c)
     ctx = ~on
     ax.scatter(Q[ctx, 0], Q[ctx, 1], s=0.25, c=GREY_LIGHT, linewidths=0, rasterized=True)
     order = np.flatnonzero(on)[np.argsort(-Q[on, 2])]  # object points, far first
-    ax.scatter(Q[order, 0], Q[order, 1], s=0.9, c=C[order], linewidths=0, rasterized=True)
+    ax.scatter(Q[order, 0], Q[order, 1], s=0.9, c=C[order] * shade, linewidths=0,
+               rasterized=True)
     lim = np.abs(to_view(bbox_corners(sc.obj) @ sc.R_gt.T + sc.t_gt, Rv, c)[:, :2]).max() * 1.45
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
