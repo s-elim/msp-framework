@@ -52,3 +52,15 @@ Bibliography: `refs.bib`. Problems: 0.
 | shen2023f3rm | arXiv:2308.07931 | Distilled Feature Fields Enable Few-Shot Language-Guided Manipulation | 2023 | ok |
 | malinin2020endd | arXiv:1905.00076 | Ensemble Distribution Distillation | 2019 | ok |
 | yang2023som | arXiv:2310.11441 | Set-of-Mark Prompting Unleashes Extraordinary Visual Grounding in GPT-4V | 2023 | ok |
+| weisz2012poseerror | doi:10.1109/ICRA.2012.6224697 | Pose error robust grasping from contact wrench space metrics | 2012 | ok |
+| mahler2016dexnet1 | doi:10.1109/ICRA.2016.7487342 | Dex-Net 1.0: A cloud-based network of 3D objects for robust grasp planning using a Multi-Armed Bandit model with correlated rewards | 2016 | ok |
+| hsiao2011robust | doi:10.1007/s10514-011-9243-2 | Robust grasping under object pose uncertainty | 2011 | ok |
+| lall1996nnboot | doi:10.1029/95WR02966 | A Nearest Neighbor Bootstrap For Resampling Hydrologic Time Series | 1996 | ok |
+| efron1979bootstrap | doi:10.1214/aos/1176344552 | Bootstrap Methods: Another Look at the Jackknife | 1979 | ok |
+| brachmann2014lmo | doi:10.1007/978-3-319-10605-2_35 | Learning 6D Object Pose Estimation Using 3D Object Coordinates | 2014 | ok |
+| deng2021poserbpf | doi:10.1109/TRO.2021.3056043 | PoseRBPF: A Rao–Blackwellized Particle Filter for 6-D Object Pose Tracking | 2021 | ok |
+| bajcsy1988active | doi:10.1109/5.5968 | Active perception | 1988 | ok |
+| shi2021fastuq | arXiv:2011.07748 | Fast Uncertainty Quantification for Deep Object Pose Estimation | 2020 | ok |
+| breyer2022nbv | arXiv:2207.10543 | Closed-Loop Next-Best-View Planning for Target-Driven Grasping | 2022 | ok |
+| murphy2021ipdf | arXiv:2106.05965 | Implicit-PDF: Non-Parametric Representation of Probability Distributions on the Rotation Manifold | 2021 | ok |
+| haugaard2023spyropose | arXiv:2303.05308 | SpyroPose: SE(3) Pyramids for Object Pose Distribution Estimation | 2023 | ok |

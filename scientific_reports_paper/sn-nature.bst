@@ -1048,7 +1048,8 @@ FUNCTION {format.booktitle}
   emphasize
 }
 FUNCTION {format.in.ed.booktitle}
-{  duplicate$ empty$ 'skip$
+{ format.booktitle  % 2026-10-25: the template pushed nothing here (empty-stack error, booktitle lost)
+  duplicate$ empty$ 'skip$
     { 
 editor "editor" format.names.ed duplicate$ empty$ 'pop$
         {  
@@ -1450,9 +1451,7 @@ FUNCTION {incollection}
 FUNCTION {inproceedings}
 { output.bibitem
   format.authors "author" output.check
-	  new.block
-	  format.editors output
-add.blank
+  new.block
   format.inpro.title "title" output.check
   new.block
   crossref missing$
@@ -1719,6 +1718,7 @@ FUNCTION {end.bib}
   "\end{thebibliography}" write$ newline$
 }
 EXECUTE {end.bib}
+%% inproceedings: removed format.editors/add.blank (empty-stack error dropped the booktitle), 2026-10-25
 %% End of customized bst file
 %%
 %% End of file `sn-nature.bst'.

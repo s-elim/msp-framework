@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-UA = {"User-Agent": "msp-refcheck/1.0 (mailto:selim.sarowar12@gmail.com)"}
+UA = {"User-Agent": "msp-refcheck/1.0"}
 
 
 def entries(text: str) -> list[dict]:

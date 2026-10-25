@@ -1,0 +1,14 @@
+\begin{tabular}{lccccccc}
+\toprule
+ & \multicolumn{2}{c}{Coverage@0.9} & \multicolumn{2}{c}{$\rho$(spread, error)} & & & \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Pose distribution & rot. & trans. & rot. & trans. & Top-1 & $\Delta$ vs 64 draws [95\% CI] & Sel@25\%\\
+\midrule
+Point estimate, 4 draws & -- & -- & -- & -- & 0.791 & $-$0.023 [$-$0.031, $-$0.016] & 0.902\\
+Point estimate, 64 draws & -- & -- & -- & -- & 0.814 & ref. & 0.919\\
+Gaussian, matched moments & 0.92 & 0.69 & 0.24 & 0.25 & 0.849 & +0.035 [+0.026, +0.043] & 0.981\\
+Bootstrap, unconditional & 0.86 & 0.85 & 0.32 & 0.38 & 0.857 & +0.043 [+0.034, +0.052] & 0.988\\
+kNN, other 12 objects & 0.85 & 0.81 & 0.10 & 0.44 & 0.854 & +0.040 [+0.031, +0.049] & 0.981\\
+\rowcolor{oursrow}\textbf{kNN, same object (ours)} & 0.87 & 0.84 & 0.40 & 0.65 & 0.859 & +0.045 [+0.036, +0.054] & 0.988\\
+\bottomrule
+\end{tabular}

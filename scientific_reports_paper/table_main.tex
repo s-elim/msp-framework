@@ -1,11 +1,25 @@
-\textcolor{famlearn}{Grasp-patch CNN, Dex-Net 2.0 architecture (n=5)} & 0.637 $\pm$ 0.013 & 0.829 $\pm$ 0.005 & 0.902 $\pm$ 0.017 & 0.611 & 0.831 \\
-\textcolor{famlearn}{MSP, stochastic code ($\beta=300$) (n=5)} & 0.650 $\pm$ 0.008 & 0.855 $\pm$ 0.004 & 0.898 $\pm$ 0.013 & 0.487 & 0.867 \\
-\textcolor{famlearn}{MSP, deterministic code (n=5)} & 0.683 $\pm$ 0.006 & 0.876 $\pm$ 0.001 & \second 0.929 $\pm$ 0.007 & 0.647 & 0.857 \\
-\textcolor{famlearn}{MSP, deterministic code, ensemble of 5 (n=3)} & 0.705 $\pm$ 0.006 & \second 0.891 $\pm$ 0.002 & \best 0.938 $\pm$ 0.006 & \second 0.664 & \second 0.884 \\
+\begin{tabular}{lccccc}
+\toprule
+Method & n & Top-1 & AUC & Sel@25\% & Cert. (fraction / precision)\\
 \midrule
-\textcolor{fampose}{Pose regressor + planner (n=5)} & \second 0.707 $\pm$ 0.007 & 0.859 $\pm$ 0.003 & 0.817 $\pm$ 0.015 & 0.000 & n/a \\
-\textcolor{fampose}{FoundationPose + planner} & \best 0.791 & \best 0.935 & 0.902 & \best 0.844 & \best 0.904 \\
+\multicolumn{6}{l}{\textcolor{famlearn}{\textbf{Learned outcome scorers (no object model)}}}\\
+Dex-Net 2.0 architecture\cite{mahler2017dexnet} & 5 & 0.637 $\pm$ 0.013 & 0.829 & 0.902 & 0.611 / 0.831\\
+RGB-D outcome scorer & 5 & 0.683 $\pm$ 0.006 & 0.876 & 0.929 & 0.647 / 0.857\\
+Deep ensemble of 5\cite{lakshminarayanan2017} & 3 & 0.705 $\pm$ 0.006 & 0.891 & 0.938 & 0.664 / 0.884\\
 \midrule
-\textcolor{famref}{Annotated pose + planner (privileged)} & 0.856 & 0.990 & 0.984 & 0.854 & 0.974 \\
-\textcolor{famref}{Random candidate} & 0.266 & 0.500 & 0.266 & - & - \\
-\textcolor{famref}{Oracle (any successful candidate)} & 0.877 & 1.000 & 1.000 & - & - \\
+\multicolumn{6}{l}{\textcolor{famfuse}{\textbf{Learned fusion with the planner score}}}\\
+POISE (scorer + point score) & 5 & 0.821 $\pm$ 0.002 & 0.958 & 0.963 & 0.874 / 0.927\\
+POISE-U (scorer + posterior score) & 5 & 0.859 $\pm$ 0.002 & \second 0.988 & 0.985 & 0.851 / \second 0.972\\
+\midrule
+\multicolumn{6}{l}{\textcolor{fampose}{\textbf{Pose-then-plan (mesh, simulator and physics prior at decision time)}}}\\
+Pose regressor + planner & 5 & 0.707 $\pm$ 0.007 & 0.859 & 0.817 & --\\
+FoundationPose\cite{wen2024foundationpose} + planner & 1 & 0.791 & 0.935 & 0.902 & 0.844 / 0.904\\
+FoundationPose + planner, 64 draws & 1 & 0.814 & 0.951 & 0.919 & --\\
+\rowcolor{oursrow}\textbf{Pose posterior (ours)} & 1 & \second 0.859 & 0.987 & \second 0.988 & 0.849 / \best 0.972\\
+\rowcolor{oursrow}\textbf{+ second view (ours)} & 1 & \best 0.865 & \best 0.993 & \best 0.997 & --\\
+\midrule
+\multicolumn{6}{l}{\textcolor{famref}{\textbf{Privileged references}}}\\
+Annotated pose + planner & 1 & 0.856 & 0.990 & 0.984 & 0.854 / 0.974\\
+Oracle (best candidate) & 1 & 0.877 & -- & -- & --\\
+\bottomrule
+\end{tabular}

@@ -25,3 +25,11 @@ baselines/*/
 
 # Slurm/build logs from baseline setup
 baselines/*.log
+
+# compiled manuscript (regenerate with tectonic)
+scientific_reports_paper/main.pdf
+scientific_reports_paper/main.aux
+scientific_reports_paper/main.bbl
+scientific_reports_paper/main.blg
+scientific_reports_paper/main.log
+scientific_reports_paper/main.out
