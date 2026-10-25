@@ -1,8 +1,8 @@
-"""Conformal calibration: Eq 22, Eq 23, Eq 24, Theorem 7, and ACI (Section 7).
+"""Conformal calibration: nonconformity score, quantile, prediction set, coverage, and ACI.
 
-This is the framework's only guarantee, so it gets the framework's strictest tests.
+This is the planner's only guarantee, so it gets the strictest tests.
 
-Every test named `test_regression_*` reproduces a defect found in the audited
+Every test named `test_regression_*` reproduces a defect found in the earlier
 implementation. Each one FAILS against the old code and PASSES against this one. They exist
 so the bug cannot come back.
 """
@@ -23,7 +23,7 @@ from msp.math.conformal import (
 )
 
 # --------------------------------------------------------------------------------------
-# Eq 22 -- nonconformity score
+# Nonconformity score
 # --------------------------------------------------------------------------------------
 
 
@@ -46,15 +46,16 @@ def test_eq22_score_is_one_minus_prob_of_realized_label() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Eq 23 -- the quantile
+# The quantile
 # --------------------------------------------------------------------------------------
 
 
 def test_eq23_quantile_is_an_order_statistic_not_an_interpolation() -> None:
-    """REGRESSION. The audited code used np.quantile's default LINEAR interpolation.
+    """REGRESSION. The earlier code used np.quantile's default LINEAR interpolation.
 
-    Theorem 7 is stated for the ceil((n+1)(1-alpha))-th ORDER STATISTIC. Interpolating
-    between adjacent ranks returns a value strictly between sorted[k-1] and sorted[k].
+    Split-conformal coverage is stated for the ceil((n+1)(1-alpha))-th ORDER STATISTIC.
+    Interpolating between adjacent ranks returns a value strictly between sorted[k-1] and
+    sorted[k].
 
     DIRECTION OF THE ERROR (verified, and the opposite of what one might assume): since
     np.quantile(E, k/n) interpolates at index (k/n)*(n-1) = k - k/n, and k <= n, that index
@@ -82,7 +83,7 @@ def test_eq23_quantile_is_an_order_statistic_not_an_interpolation() -> None:
 
 
 def test_eq23_quantile_rejects_vacuous_calibration_folds() -> None:
-    """REGRESSION. The audited code clamped the quantile level to 1.0 when n was too
+    """REGRESSION. The earlier code clamped the quantile level to 1.0 when n was too
     small, silently voiding the guarantee. We raise."""
     assert min_calibration_size(0.1) == 9
     with pytest.raises(ValueError, match="too small"):
@@ -91,7 +92,7 @@ def test_eq23_quantile_rejects_vacuous_calibration_folds() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Eq 23 / Eq 24 -- the prediction set and the singleton test
+# The prediction set and the singleton test
 # --------------------------------------------------------------------------------------
 
 
@@ -111,12 +112,12 @@ def test_eq23_prediction_set_computes_both_labels() -> None:
 def test_regression_eq24_ambiguous_set_is_not_certified() -> None:
     """REGRESSION -- THE SAFETY BUG.
 
-    The audited `get_certified_set` tested only `(1 - s) <= q_hat`, i.e. only whether label
+    The earlier `get_certified_set` tested only `(1 - s) <= q_hat`, i.e. only whether label
     1 was IN the set. It never computed score_0, so it certified any action whose set was
     the ambiguous {0, 1}. A coin-flip action with s = 0.50 was certified as a guaranteed
-    success. Eq 24 requires the SINGLETON: C(o, a) == {1}.
+    success. Certification requires the SINGLETON: C(o, a) == {1}.
 
-    q_hat = 0.678 is the value actually fitted by the audited calibrator on a well-specified
+    q_hat = 0.678 is the value actually fitted by the earlier calibrator on a well-specified
     n=500 fold at alpha=0.1. The ambiguity band is 1 - q_hat <= s <= q_hat, i.e.
     [0.322, 0.678]: every action in that band has BOTH labels in its prediction set and none
     of them may be certified.
@@ -125,10 +126,10 @@ def test_regression_eq24_ambiguous_set_is_not_certified() -> None:
     s = torch.tensor([[0.50, 0.62, 0.95]])
     C = prediction_set(s, q_hat)
 
-    old_behaviour = (1.0 - s) <= q_hat  # what the audited code computed
+    old_behaviour = (1.0 - s) <= q_hat  # what the earlier code computed
     torch.testing.assert_close(old_behaviour, torch.tensor([[True, True, True]]))
 
-    certified = C.is_certified_success()  # Eq 24, done properly
+    certified = C.is_certified_success()  # the singleton test, done properly
     torch.testing.assert_close(certified, torch.tensor([[False, False, True]]))
 
     assert C.is_ambiguous()[0, 0], "s=0.50 (a coin flip) must be AMBIGUOUS, not certified"
@@ -137,7 +138,7 @@ def test_regression_eq24_ambiguous_set_is_not_certified() -> None:
 
 def test_eq24_the_ambiguity_band_is_exactly_one_minus_qhat_to_qhat() -> None:
     """Characterize the set of success probabilities that CANNOT be certified at a given
-    q_hat. Any s in [1 - q_hat, q_hat] has both labels in its set. The audited code
+    q_hat. Any s in [1 - q_hat, q_hat] has both labels in its set. The earlier code
     certified this entire band -- which, at the q_hat values a real model produces
     (~0.68 here), is more than a third of the probability axis."""
     q_hat = 0.678
@@ -170,14 +171,14 @@ def test_eq24_set_partition_is_exhaustive_and_disjoint() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Theorem 7 -- marginal coverage
+# Marginal coverage
 # --------------------------------------------------------------------------------------
 
 
-def test_theorem7_marginal_coverage_holds_empirically() -> None:
+def test_split_conformal_marginal_coverage_holds_empirically() -> None:
     """P( succ in C(o,a) ) >= 1 - alpha, over ALL test points.
 
-    Note this is *marginal* coverage over the whole test fold. The audited evaluator instead
+    Note this is *marginal* coverage over the whole test fold. The earlier evaluator instead
     measured P(succ = 1 | a in A_cert) -- the precision of the certified set -- and logged
     it against a 1-alpha target. Conditioning on selection destroys exchangeability, so that
     quantity has no reason to converge to 1 - alpha. This test measures the real thing.
@@ -203,7 +204,7 @@ def test_theorem7_marginal_coverage_holds_empirically() -> None:
     assert coverage >= 1 - alpha - 0.02, f"coverage {coverage:.4f} below nominal {1 - alpha}"
 
 
-def test_theorem7_coverage_holds_for_a_miscalibrated_model() -> None:
+def test_split_conformal_coverage_holds_for_a_miscalibrated_model() -> None:
     """Conformal coverage is DISTRIBUTION-FREE: it must hold even when the underlying model
     is badly miscalibrated. This is the whole point of the guarantee."""
     torch.manual_seed(1)
@@ -222,7 +223,7 @@ def test_theorem7_coverage_holds_for_a_miscalibrated_model() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Section 7 -- Adaptive Conformal Inference
+# Adaptive Conformal Inference
 # --------------------------------------------------------------------------------------
 
 
@@ -230,7 +231,7 @@ def test_regression_aci_is_anchored_to_a_fixed_target() -> None:
     """REGRESSION -- THE DIVERGENCE BUG.
 
     Correct ACI:  alpha_{t+1} = alpha_t + gamma * (TARGET - err_t),  target fixed.
-    Audited code: alpha_{t+1} = alpha_t + gamma * (alpha_t - err_t),  target = the mutating
+    Earlier code: alpha_{t+1} = alpha_t + gamma * (alpha_t - err_t),  target = the mutating
     alpha itself. That is alpha_t*(1+gamma) - gamma*err_t: positive feedback with no anchor.
     It diverged to the clamp in ~100 steps, collapsing a 90% coverage target to 1%.
     """

@@ -1,6 +1,6 @@
 """The Belief abstraction: reparameterization, divergences, and graph hygiene.
 
-The regression tests here pin the two defects that made the audited TTA both wrong and
+The regression tests here pin the two defects that made the earlier TTA both wrong and
 unrunnable.
 """
 
@@ -26,10 +26,10 @@ def test_rsample_shape_and_reparameterization() -> None:
 def test_regression_rsample_gives_logvar_a_gradient() -> None:
     """REGRESSION -- THE FROZEN-SIGMA DEFECT.
 
-    The audited TTA evaluated the outcome head at the belief's MEAN, so d(NLL)/d(logvar) was
+    An earlier TTA evaluated the outcome head at the belief's MEAN, so d(NLL)/d(logvar) was
     identically zero and the belief's variance never moved (measured ||dlogvar|| = 0.0 after
     20 steps). Since epistemic variance v is what active perception consumes, TTA could not
-    reduce the ambiguity U that contribution C3 says it reduces.
+    reduce the ambiguity at all.
 
     Sampling is what couples logvar to any downstream likelihood. `Belief.rsample` is the
     only route to the head, so the bug is no longer expressible -- but we pin it anyway.
@@ -70,7 +70,7 @@ def test_kl_to_self_is_zero() -> None:
 
 def test_kl_to_prior_is_the_special_case_of_kl_to() -> None:
     """kl_to_prior() must equal kl_to(N(0, I)). One implementation, two entry points --
-    the audited code had two hand-written implementations that drifted apart."""
+    the earlier code had two hand-written implementations that drifted apart."""
     b = DiagonalGaussianBelief(torch.randn(5, 8), torch.randn(5, 8) * 0.3)
     prior = DiagonalGaussianBelief(torch.zeros(5, 8), torch.zeros(5, 8))
     torch.testing.assert_close(b.kl_to_prior(), b.kl_to(prior), atol=1e-5, rtol=1e-5)
@@ -90,7 +90,7 @@ def test_kl_direction_is_not_symmetric() -> None:
 def test_regression_as_free_parameters_returns_leaves() -> None:
     """REGRESSION -- THE TTA CRASH.
 
-    The audited TTA read the encoder's live mu_0/logvar_0 inside its KL term. backward()
+    The earlier TTA read the encoder's live mu_0/logvar_0 inside its KL term. backward()
     freed that graph on step 1, so step 2 raised
     `RuntimeError: Trying to backward through the graph a second time`. TTA had never been
     executed. `as_free_parameters` must return graph-free LEAF tensors so the TTA loop can

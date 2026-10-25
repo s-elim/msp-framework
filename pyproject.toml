@@ -29,8 +29,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
-  "equation: pins a numbered equation of the formalization",
-  "regression: reproduces a defect found in the audited implementation",
   "slow: requires a simulator or GPU",
 ]
 filterwarnings = ["error::RuntimeWarning"]

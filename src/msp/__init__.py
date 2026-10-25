@@ -1,7 +1,7 @@
-"""Manipulation-Sufficient Perception (MSP).
+"""Pose-posterior grasp planning on LM-Grasp.
 
-Perception for manipulation, formulated as estimating a calibrated belief over the minimal
-statistic that preserves all and only the information that changes action outcomes.
+LINEMOD-based grasp benchmark, MuJoCo outcome oracle, residual-bootstrap pose posterior,
+planning and execution checks, learned outcome scorers and conformal certificates.
 """
 
 __version__ = "0.1.0"

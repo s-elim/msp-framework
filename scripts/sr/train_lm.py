@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
 from msp.belief import DiagonalGaussianBelief  # noqa: E402
-from msp.data.synthetic import collate  # noqa: E402
+from msp.data.collate import collate  # noqa: E402
 from msp.engine.trainer import TrainConfig, Trainer  # noqa: E402
 from msp.math.bottleneck import BetaSchedule, distortion, vib_objective  # noqa: E402
 from msp.types import Outcome  # noqa: E402
@@ -325,7 +325,7 @@ class LMTrainer(Trainer):
         return replace(terms, loss=terms.loss + self.cfg.beta.succ * self.rank_w * rl)
 
 
-# ----------------------------------------------------------------------------- MSP / direct
+# ------------------------------------------------------------ bottleneck scorer (msp) / direct
 def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     act_dim = dsets["train"].actions.shape[-1]
     if a.points:  # study 6
@@ -338,7 +338,7 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
     dl = {k: DataLoader(v, batch_size=a.batch, shuffle=(k == "train"), collate_fn=collate,
                         num_workers=0, drop_last=(k == "train"))
           for k, v in dsets.items() if k in ("train", "val")}
-    beta = BetaSchedule.sufficiency_for_success(a.beta)
+    beta = BetaSchedule.success_first(a.beta)
     if a.vlm_aux > 0:  # study 3 V1b: VLM score regressed on the margin channel
         beta = replace(beta, margin=a.vlm_aux * a.beta)
     cfg = TrainConfig(epochs=a.epochs, lr=a.lr, weight_decay=1e-4, warmup_epochs=2,
@@ -354,7 +354,7 @@ def train_msp(a, dsets, out: Path, direct: bool) -> dict:
         t0 = time.time()
         m = tr.train_epoch() | tr.validate()
         # Model selection, identical in kind for every method: the validation success BCE of
-        # the method's OWN decision score (MSP: posterior-mean probability over K = 8 draws;
+        # the method's OWN decision score (bottleneck scorer: posterior-mean probability over K = 8 draws;
         # direct: probability at z = mu).
         sv = score_split(enc, head, dsets["val"], direct, k=8)["s"]
         bce = bce_of(sv, dsets["val"].b["succ"])
@@ -421,7 +421,7 @@ def train_qcode(a, dsets, out: Path) -> dict:
     head = OutcomeHead(latent_dim=a.latent, action_dim=9, gripper_dim=0, hidden=256)
     prior = FactorizedPrior(a.latent)
     enc, head, prior = enc.to(DEV), head.to(DEV), prior.to(DEV)
-    beta = BetaSchedule.sufficiency_for_success(a.beta)
+    beta = BetaSchedule.success_first(a.beta)
     params = list(enc.parameters()) + list(head.parameters()) + list(prior.parameters())
     opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=1e-4)
     dl = DataLoader(dsets["train"], batch_size=a.batch, shuffle=True, collate_fn=collate,

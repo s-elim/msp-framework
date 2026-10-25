@@ -146,7 +146,7 @@ def ranking_metrics(s: np.ndarray, y: np.ndarray, obj: np.ndarray, conf: np.ndar
 
 def score_row(s_te, s_ca, yt, yc, ot, v_te=None) -> dict:
     """Ranking, selective and certificate metrics of one score matrix. With a per-candidate
-    variance v (MSP posterior draws or ensemble members), selective execution is also scored
+    variance v (bottleneck-scorer posterior draws or ensemble members), selective execution is also scored
     with the lower confidence bound s - sd of the selected candidate."""
     row = ranking_metrics(s_te, yt, ot)
     if v_te is not None:

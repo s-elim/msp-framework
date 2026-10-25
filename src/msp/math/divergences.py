@@ -27,8 +27,8 @@ def diagonal_gaussian_kl(
     last (latent) axis.
 
     Used by:
-      * the TTA trust region, Eq 20:  KL( q'(z) || q_theta(z|o) )
-      * `kl_to_standard_normal`, which is the special case p = N(0, I) of Eq 11.
+      * the test-time-adaptation trust region:  KL( q'(z) || q_theta(z|o) )
+      * `kl_to_standard_normal`, which is the special case p = N(0, I).
 
     Closed form, per coordinate::
 
@@ -51,12 +51,12 @@ def diagonal_gaussian_kl(
 
 
 def kl_to_standard_normal(mu: Tensor, logvar: Tensor) -> Tensor:
-    """KL( N(mu, diag exp(logvar)) || N(0, I_d) ). Formalization Eq 11::
+    """KL( N(mu, diag exp(logvar)) || N(0, I_d) )::
 
         KL = 0.5 * sum_{j=1..d} ( sigma_j^2 + mu_j^2 - 1 - log sigma_j^2 )
 
-    This is the *rate* of the information bottleneck (Eq 8) under the reference prior
-    r(z) = N(0, I_d) prescribed in Section 11.
+    This is the *rate* of the information bottleneck under the reference prior
+    r(z) = N(0, I_d).
 
     Args:
         mu:     (..., d)
@@ -78,8 +78,8 @@ def gaussian_nll(y: Tensor, mu: Tensor, logvar: Tensor) -> Tensor:
         -log N(y; mu, sigma^2) = 0.5 * [ log(2 pi) + logvar + (y - mu)^2 * exp(-logvar) ]
 
     The constant 0.5*log(2pi) does not affect gradients, but it *does* affect the reported
-    distortion, which the paper compares across models and plots on the rate-distortion
-    frontier. A frontier missing a constant is not a likelihood. We keep it.
+    distortion, which is compared across models. A distortion missing a constant is not a
+    likelihood. We keep it.
 
     `logvar` is assumed pre-clamped (see `OutcomeDistribution`), which is what keeps
     `exp(-logvar)` from overflowing.
@@ -122,8 +122,7 @@ def zero_inflated_lognormal_nll(
 
     That is not hypothetical. On the RGB-D corpus with a plain log-normal, the slip distortion was
     -1.66 on train and +965.2 on validation, and the validation total was 966 -- i.e. the *entire*
-    reported distortion, and therefore the entire rate-distortion frontier, was the slip term
-    exploding on held-out data.
+    reported distortion was the slip term exploding on held-out data.
 
     Decomposing into "did it slip?" (a Bernoulli) and "by how much, given that it did?" (a
     log-normal on the positive part) matches the physics exactly and is bounded by construction:

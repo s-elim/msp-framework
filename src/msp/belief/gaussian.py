@@ -1,13 +1,13 @@
 """Diagonal-Gaussian belief: q(z|o) = N(mu(o), diag sigma(o)^2).
 
-The default posterior family and the one Section 11 prescribes. It is adequate for
-asymmetric objects and it is the family the rate term's closed form (Eq 11) assumes.
+The default posterior family. It is adequate for asymmetric objects and it is the family the
+rate term's closed form assumes.
 
-IT IS NOT ADEQUATE FOR THEOREM 5. A diagonal Gaussian is unimodal; the belief on a
+IT IS NOT ADEQUATE FOR SYMMETRIC OBJECTS. A diagonal Gaussian is unimodal; the belief on a
 symmetric object should be supported on the symmetry orbit, which is multi-modal. Use
-`MixtureBelief` there. This limitation is stated in the class docstring rather than buried,
-because using this family on symmetric objects silently reproduces the exact failure the
-paper condemns, and it will not announce itself -- the loss will look fine.
+a mixture family there (not implemented in this repository). This limitation is stated here
+rather than buried, because on symmetric objects this family silently averages the modes and
+it will not announce itself -- the loss will look fine.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class DiagonalGaussianBelief(Belief):
     # -- sampling ------------------------------------------------------------
 
     def rsample(self, num_samples: int) -> Tensor:
-        """z = mu + sigma * eps,  eps ~ N(0, I).  Formalization Section 3.
+        """z = mu + sigma * eps,  eps ~ N(0, I).
 
         Returns (B, K, d). Gradients flow to mu and logvar; the noise is detached by
         construction (torch.randn does not require grad).
@@ -75,16 +75,16 @@ class DiagonalGaussianBelief(Belief):
     # -- divergences ---------------------------------------------------------
 
     def kl_to_prior(self) -> Tensor:
-        """Eq 11. Returns (B,)."""
+        """KL( N(mu, diag sigma^2) || N(0, I) ). Returns (B,)."""
         return kl_to_standard_normal(self.mu, self.logvar)
 
     def kl_to(self, other: Belief) -> Tensor:
-        """KL(self || other). Eq 20's trust region. Returns (B,)."""
+        """KL(self || other), the test-time-adaptation trust region. Returns (B,)."""
         if not isinstance(other, DiagonalGaussianBelief):
             raise TypeError(
                 "Closed-form KL is only available between two DiagonalGaussianBelief "
                 f"instances; got {type(other).__name__}. For mixed families, use a Monte "
-                "Carlo estimate via MixtureBelief.kl_to."
+                "Carlo estimate."
             )
         return diagonal_gaussian_kl(self.mu, self.logvar, other.mu, other.logvar)
 
@@ -100,9 +100,9 @@ class DiagonalGaussianBelief(Belief):
 
     def as_free_parameters(self) -> tuple[Tensor, Tensor]:
         """Leaf tensors (mu, logvar) with requires_grad=True, detached from any encoder
-        graph, for TTA to optimize directly (Eq 20).
+        graph, for test-time adaptation to optimize directly.
 
-        Returning *leaves* is what prevents the audited crash: the TTA loop calls
+        Returning *leaves* is what prevents an earlier crash: the TTA loop calls
         `backward()` once per step, and if the parameters still carried encoder graph
         history the second call would try to traverse a freed graph.
         """
@@ -117,13 +117,12 @@ class DiagonalGaussianBelief(Belief):
 
     @staticmethod
     def fuse(beliefs: list[DiagonalGaussianBelief]) -> DiagonalGaussianBelief:
-        """Fuse per-view beliefs into a belief over the fused observation. Formalization Eq 17,
-        where `o ∪ o_b` denotes "the belief re-encoded from the fused observation".
+        """Fuse per-view beliefs into a belief over the fused observation.
 
         THE MATHEMATICS, because the obvious alternatives are wrong.
 
-        Views are conditionally independent given the state (each camera has its own noise, and
-        Eq 1's graphical model makes O_i ⟂ O_j | X). So the posterior over z given several views
+        Views are conditionally independent given the state (each camera has its own noise, so
+        O_i ⟂ O_j | X). So the posterior over z given several views
         is the normalized product of the per-view posteriors, divided by the prior counted once
         too often::
 
@@ -139,12 +138,12 @@ class DiagonalGaussianBelief(Belief):
           * Averaging the means. This does not sharpen the belief at all -- two independent views
             of the same object should make you MORE certain, and an average leaves the variance
             where it was. Since epistemic variance is the entire signal that drives active
-            perception (Eq 16), a fusion that cannot reduce it makes looking again pointless, and
+            perception, a fusion that cannot reduce it makes looking again pointless, and
             the information gain of every viewpoint would come out at zero.
 
           * Concatenating the images and re-encoding. Defensible, but it forces a fixed number of
-            views into the architecture, and Algorithm 2 acquires views one at a time until the
-            ambiguity drops below tau_U. The number is not known in advance.
+            views into the architecture, while views are acquired one at a time until the
+            ambiguity is low enough. The number is not known in advance.
 
         The prior subtraction is what makes this a fusion rather than a pile-up: without it, k
         views of a completely uninformative scene would still collapse the belief to a point.

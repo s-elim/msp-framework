@@ -1,4 +1,4 @@
-"""Posterior families for the sufficient statistic z."""
+"""Posterior families for the image code z of the learned outcome scorers."""
 
 from msp.belief.base import Belief
 from msp.belief.gaussian import DiagonalGaussianBelief

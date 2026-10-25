@@ -1,6 +1,6 @@
 """Per-scene decision latency of each learned LM-Grasp method, batch size 1 (one scene, all 16
 candidates), on the GPU and on 8 CPU threads. Median over 300 test scenes after 30 warm-up
-scenes. MSP draws K = 32 posterior samples, as in evaluation; the ensemble is 5 direct models.
+scenes. The bottleneck scorer draws K = 32 posterior samples, as in evaluation; the ensemble is 5 direct models.
 
     python scripts/sr/time_methods.py --out results/sr/latency.json
 """

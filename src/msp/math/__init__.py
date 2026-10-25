@@ -1,8 +1,8 @@
-"""Pure mathematics of MSP: one module per section of the formalization.
+"""Pure mathematics: the information-bottleneck loss, conformal certificates, divergences.
 
 Nothing in this package imports torch.nn, touches a device, or performs I/O. Every function
-corresponds to a numbered equation and is unit-tested against a hand-computed reference, so
-the science can be verified without instantiating a network.
+is unit-tested against a hand-computed reference, so it can be verified without
+instantiating a network.
 """
 
 from msp.math.bottleneck import (

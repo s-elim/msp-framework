@@ -1,6 +1,6 @@
 """Datasets: LM-Grasp (real LINEMOD RGB-D crops with simulated grasp outcomes, `linemod`) and
-the collate function shared by every scorer (`synthetic.collate`)."""
+the batch collation shared by every scorer (`collate`)."""
 
-from msp.data.synthetic import SyntheticGraspDataset, collate
+from msp.data.collate import collate
 
-__all__ = ["SyntheticGraspDataset", "collate"]
+__all__ = ["collate"]

@@ -1,6 +1,5 @@
-"""The two learned modules of MSP. Step 5 of the blueprint reduces the framework to exactly
-these: everything else -- selection, abstention, active perception, adaptation -- is an
-inference procedure over them.
+"""The two learned modules of the outcome scorers. Selection, abstention, multi-view fusion and
+test-time adaptation are inference procedures over them.
 
     A: BeliefEncoder   o          -> q_theta(z | o)      (a Belief, not a tuple)
     B: OutcomeHead     (z, a, g)  -> p_psi(y | z, a, g)  (an OutcomeDistribution)
@@ -44,11 +43,11 @@ class Backbone(nn.Module, ABC):
 
 
 class MLPBackbone(Backbone):
-    """For vector observations: synthetic worlds, ablations, and fast integration tests.
+    """For vector observations: ablations and fast tests.
 
-    Its existence is deliberate. It lets the entire training/inference/calibration pipeline
-    be exercised end to end in seconds against `SyntheticOracle`, where the right answer is
-    known -- so a pipeline bug cannot hide behind "the vision model needs more epochs".
+    Its existence is deliberate. It lets the training, inference and calibration pipeline be
+    exercised end to end in seconds on vector data, so a pipeline bug cannot hide behind "the
+    vision model needs more epochs".
     """
 
     def __init__(self, input_dim: int, output_dim: int = 128, hidden: int = 256) -> None:
@@ -71,15 +70,12 @@ class ResNetBackbone(Backbone):
     """RGB-D backbone. 4-channel stem, ImageNet-initialized on the RGB channels.
 
     NOTE ON A KNOWN LIMITATION. This pools to a single global vector, so z is one code for
-    the WHOLE SCENE. The formalization's physical reading is that "contact regions and
-    center-of-mass indicators are preserved to high resolution because dM/dx is large there"
-    -- a spatial, per-object claim. Global average pooling destroys exactly that locality,
-    and it makes multi-object scenes (reviewer attack 24) unrepresentable.
+    the WHOLE SCENE. Contact regions and centre-of-mass indicators matter at high
+    resolution, a spatial, per-object property. Global average pooling destroys that locality,
+    and it makes multi-object scenes unrepresentable.
 
-    This is adequate for single-object benchmarks and it is what the paper's V1 scope
-    (rigid, single object) requires. It is NOT the right inductive bias for the full claim,
-    and a per-object / spatially-structured encoder is the first thing to build after the
-    core result lands. Documented here rather than discovered later.
+    This is adequate for single-object benchmarks such as LM-Grasp. A per-object, spatially
+    structured encoder is the natural next step. Documented here rather than discovered later.
     """
 
     def __init__(self, output_dim: int = 512, pretrained: bool = True) -> None:
@@ -116,9 +112,8 @@ class BeliefEncoder(nn.Module):
 
     MULTI-VIEW, AND WHY THE ENCODER MUST DO THE FUSING ITSELF.
 
-    Formalization Eq 17 writes the fused observation as `o ∪ o_b`, and Algorithm 2 spells out what
-    that means: "execute b*; obtain fused/fresh observation o'; update belief:
-    (mu, logsig2) = Encoder_theta(o')". The ENCODER consumes the set of views. It is not a
+    Fusing views means re-encoding the belief from the fused observation after each new view:
+    (mu, logsig2) = Encoder_theta(o'). The ENCODER consumes the set of views. It is not a
     post-hoc combination of separately-encoded beliefs.
 
     That distinction is not pedantic, and getting it wrong produces a result that looks like
@@ -136,10 +131,10 @@ class BeliefEncoder(nn.Module):
     reported 74% ambiguity reduction was precision arithmetic, not information.
 
     A permutation-invariant set encoder has no such problem: duplicate views collapse under the
-    mean and contribute nothing, and correlations between neighbouring views are LEARNED from data
-    rather than assumed away. Train it with a random number of views per scene and it handles any
-    count at deployment, which is what Algorithm 2 needs -- views are acquired one at a time until
-    the ambiguity drops below tau_U, so the count is not known in advance.
+    mean and contribute nothing, and correlations between neighbouring views are LEARNED from
+    data rather than assumed away. Train it with a random number of views per scene and it
+    handles any count at deployment, which is what active perception needs -- views are acquired
+    one at a time until the ambiguity is low enough, so the count is not known in advance.
     """
 
     def __init__(self, backbone: Backbone, latent_dim: int = 64, hidden: int = 256) -> None:
@@ -160,9 +155,9 @@ class BeliefEncoder(nn.Module):
     def forward(self, obs: Tensor) -> Belief:
         """`obs` may be a single view (B, C, H, W) or a SET of views (B, V, C, H, W).
 
-        For images, a set is 5-D and a single view is 4-D. For the vector observations used by the
-        synthetic world, a set is 3-D and a single vector is 2-D. Both are handled, because the
-        integration tests run the whole pipeline on the vector world in seconds.
+        For images, a set is 5-D and a single view is 4-D. For vector observations, a set is 3-D
+        and a single vector is 2-D. Both are handled, so the pipeline can also run on vector
+        data.
         """
         is_image = obs.dim() >= 4
         is_set = obs.dim() == 5 if is_image else obs.dim() == 3
@@ -178,18 +173,17 @@ class BeliefEncoder(nn.Module):
 
 
 class OutcomeHead(nn.Module):
-    """p_psi(y | z, a, g). The module that DEFINES sufficiency: without it, z has no
-    objective. Also the action scorer.
+    """p_psi(y | z, a, g): the outcome model and the action scorer. Without it z has no
+    training signal.
 
-    The gripper descriptor `g` (V2, Change 2) makes the estimand sufficiency with respect to
-    a gripper FAMILY rather than one gripper, which is the cross-embodiment claim. It is a
-    first-class argument here rather than a later bolt-on, because retrofitting it would
-    change the meaning of every trained checkpoint.
+    The gripper descriptor `g` conditions the prediction on the gripper, so one model can cover
+    a gripper FAMILY rather than one gripper. It is a first-class argument here rather than a
+    later bolt-on, because retrofitting it would change the meaning of every trained checkpoint.
 
     SHAPE CONTRACT -- read this. `z` is (B, K, d) and `a` is (B, Na, Ad), and the head
     evaluates the full K x Na CROSS PRODUCT: every posterior sample against every candidate
-    action. The audited head accepted (B, K, d) and (B, Na, ...) and silently returned the
-    DIAGONAL when K happened to equal Na, quietly destroying the marginalization of Eq 13-14.
+    action. An earlier head accepted (B, K, d) and (B, Na, ...) and silently returned the
+    DIAGONAL when K happened to equal Na, quietly destroying the marginalization over z.
     Here the cross product is explicit in the shapes and there is no branch to get wrong.
     """
 
@@ -304,6 +298,6 @@ class OutcomeHead(nn.Module):
     def success_probs(
         self, z: Tensor, actions: Tensor, gripper: Tensor | None = None
     ) -> Tensor:
-        """sigma_psi(z_k, a) for the full cross product. (B, K, Na). Feeds Eq 13/14."""
+        """sigma_psi(z_k, a) for the full cross product. (B, K, Na)."""
         dist = self.forward(z, actions, gripper=gripper)
         return dist.success_prob().squeeze(-1)

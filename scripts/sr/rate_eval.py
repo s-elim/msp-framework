@@ -1,4 +1,4 @@
-"""Payload size versus decision quality for trained MSP runs.
+"""Payload size versus decision quality for trained bottleneck-scorer runs (--method msp).
 
 The belief (mu, log sigma^2) is uniformly quantized per dimension to b bits on a range fixed
 from the CALIBRATION split (1st-99th percentile). The code length is the cross-entropy of the
@@ -14,7 +14,7 @@ matched payloads under the same quantizer and entropy-code estimate.
     python scripts/sr/rate_eval.py --runs 'msp_b*_d32_s*' --out results/sr/rate.json
 
 `--scheme dims` (fixed on 2026-10-24 before any test number of this scheme was seen) sends only
-m of the latent coordinates, ranked by each method's own calibration-split criterion: MSP keeps
+m of the latent coordinates, ranked by each method's own calibration-split criterion: the bottleneck scorer keeps
 the m dimensions with the largest mean KL to the prior and the receiver uses the prior
 (mu = 0, log sigma^2 = 0) for the rest and the calibration-mean log sigma^2 for the sent ones,
 so only m means are on the wire; the direct scorer sends its first m PCA coefficients (PCA
@@ -64,7 +64,7 @@ def code_bits(sym_cal: torch.Tensor, sym_te: torch.Tensor, L: int) -> float:
 
 @torch.no_grad()
 def scores(head, mu, lv, actions, k: int = 32) -> np.ndarray:
-    """MSP: posterior-mean success over k draws; lv=None: direct scorer at z = mu."""
+    """Bottleneck scorer: posterior-mean success over k draws; lv=None: direct scorer at z = mu."""
     torch.manual_seed(0)
     out = []
     for i in range(0, len(mu), 256):

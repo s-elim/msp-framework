@@ -1,27 +1,14 @@
-"""The belief over the manipulation-sufficient statistic: q(z | o).
+"""The posterior over the image code: q(z | o), used by the learned outcome scorers.
 
-WHY THIS ABSTRACTION EXISTS.
+`Belief` is an abstract posterior whose ONLY route to the outcome head is `rsample(K)`, so a
+point-estimate shortcut is not expressible, and whose family is swappable.
 
-In the audited implementation the belief was a bare `(mu, logvar)` tuple passed between six
-call sites. Two consequences followed directly, and both were scientific errors rather than
-software ones:
-
-  1. Test-time adaptation evaluated the outcome head at the belief's MEAN instead of on
-     samples from it. The gradient of the likelihood term w.r.t. logvar was therefore
-     identically zero, and the belief's variance never moved (measured: ||dlogvar|| = 0.0
-     after 20 steps). Since the epistemic variance v is what active perception consumes,
-     TTA could not reduce the ambiguity U that contribution C3 claims it reduces.
-
-  2. The Gaussian family was hard-coded everywhere. But Theorem 5 says the belief on a
-     symmetric object must be supported on a *group orbit* -- inherently multi-modal. A
-     diagonal Gaussian is unimodal and collapses to the mean, which is precisely the
-     "physically impossible mean pose" that the blueprint's wrong-assumption #10 condemns.
-     The reference implementation committed the error the paper was written to refute.
-
-`Belief` fixes both structurally. It is an abstract posterior whose ONLY route to the
-outcome head is `rsample(K)` -- so a point-estimate shortcut is not expressible -- and whose
-family is swappable, so `MixtureBelief` can carry an orbit where `DiagonalGaussianBelief`
-cannot.
+Two defects of an earlier implementation motivated it. The belief was a bare `(mu, logvar)`
+tuple, so test-time adaptation evaluated the outcome head at the MEAN instead of on samples:
+the gradient w.r.t. logvar was identically zero and the variance never moved (measured:
+||dlogvar|| = 0.0 after 20 steps). And the Gaussian family was hard-coded, although the
+belief for a symmetric object is multi-modal and a diagonal Gaussian collapses it to one
+mean that may not be a physically possible pose.
 """
 
 from __future__ import annotations
@@ -35,7 +22,7 @@ __all__ = ["Belief"]
 
 
 class Belief(ABC):
-    """A distribution over the sufficient statistic z in R^d.
+    """A distribution over the image code z in R^d.
 
     Implementations must be differentiable through `rsample` (the reparameterization
     trick), because the VIB distortion term backpropagates into the encoder through the
@@ -70,20 +57,20 @@ class Belief(ABC):
 
     @abstractmethod
     def kl_to_prior(self) -> Tensor:
-        """KL( q(z|o) || r(z) ) with r = N(0, I_d). The rate term, Eq 8 / Eq 11.
+        """KL( q(z|o) || r(z) ) with r = N(0, I_d): the rate term.
 
         Returns (B,) -- one rate per scene, unreduced.
         """
 
     @abstractmethod
     def kl_to(self, other: Belief) -> Tensor:
-        """KL( self || other ). The TTA trust region, Eq 20. Returns (B,)."""
+        """KL( self || other ): the test-time-adaptation trust region. Returns (B,)."""
 
     @abstractmethod
     def detach(self) -> Belief:
         """A copy with parameters detached from the autograd graph.
 
-        TTA needs this. The audited TTA read the encoder's live `mu_0`/`logvar_0` inside its
+        TTA needs this. An earlier TTA read the encoder's live `mu_0`/`logvar_0` inside its
         KL term, so `backward()` on step 2 tried to traverse an already-freed encoder graph
         and raised `RuntimeError: Trying to backward through the graph a second time`. The
         function had never been run. Detaching at the boundary is the fix, and making it an
@@ -94,8 +81,8 @@ class Belief(ABC):
     def point_estimate(self) -> Tensor:
         """A single representative z, (B, d). For logging and for the optional readout ONLY.
 
-        NEVER use this to score actions: it discards the epistemic spread that Eq 14, Eq 15,
-        Eq 16 and Eq 17 are all defined in terms of.
+        NEVER use this to score actions: it discards the epistemic spread that the outcome
+        probability, its variance and multi-view fusion are all computed from.
         """
 
     def expected_success(self, head, actions: Tensor, num_samples: int, gripper=None) -> Tensor:

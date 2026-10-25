@@ -2,7 +2,7 @@
 
 Code and experiment record for **Planning on a residual-based pose posterior closes the
 grasp-success gap between estimated and annotated object poses** (Md Selim Sarowar and Sungho Kim,
-Advanced Visual Intelligence Lab, Yeungnam University). The manuscript is in preparation for
+Advanced Visual Intelligence Lab, Yeungnam University). The manuscript is under review at
 Scientific Reports; its sources are in `scientific_reports_paper/`.
 
 Project page: <https://physical-agi.github.io/MSP-FRAMEWORK/>

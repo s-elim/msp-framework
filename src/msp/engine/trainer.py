@@ -1,11 +1,11 @@
 """Training loop for the two learned modules.
 
-Three engineering commitments, each of which the audited trainer got wrong or omitted:
+Three engineering commitments, each of which an earlier trainer got wrong or omitted:
 
 * THE NETWORK RUNS IN BF16; THE LOSS DOES NOT. `autocast` wraps only the encoder and head.
-  The rate and distortion are then computed in fp32, because they are not merely training
-  signals -- they are the coordinates plotted on the paper's rate-distortion frontier, and
-  bf16 carries ~8 mantissa bits (2-3 decimal digits). Training in reduced precision is
+  The rate and distortion are then computed in fp32, because they are reported as
+  measurements, not only used as training signals, and bf16 carries ~8 mantissa bits (2-3
+  decimal digits). Training in reduced precision is
   correct; *measuring* in reduced precision is not. A GradScaler is used only for fp16;
   bf16 has the dynamic range and needs none.
 
@@ -112,33 +112,31 @@ class TrainConfig:
     #: Posterior samples used to estimate the distortion  D = E_{z~q(z|o)}[ -log p(y|z,a) ]  at
     #: TRAINING time. It must be > 1, and here is why.
     #:
-    #: The distortion is an EXPECTATION over z (Eq 13/14). Estimating it from a SINGLE draw is
-    #: unbiased but the variance is ruinous, because the posterior is noise-dominated: measured on
-    #: LIBERO, |mu| ~ 0.37 while sigma ~ 0.71, so one sample of z is mostly noise.
+    #: The distortion is an EXPECTATION over z. Estimating it from a SINGLE draw is unbiased but
+    #: the variance is ruinous, because the posterior is noise-dominated: in an earlier study
+    #: the noise was about twice the signal, so one sample of z is mostly noise.
     #:
-    #: What that costs is not slower convergence -- it is a DIFFERENT MODEL. Whether a grasp works
-    #: depends on the angle between the jaws and the object, i.e. on an INTERACTION between the
-    #: action and the object's pose in z. Through a single noisy draw the head cannot resolve the
-    #: pose, so it cannot form that interaction, and it converges to the only thing that survives
-    #: the noise: the per-object base success rate. The action is then ignored outright --
-    #: prediction std across the 8 candidate grasps of a scene was 0.0027, against 0.4148 in the
-    #: ground truth. Within-scene AUC 0.524 (chance) while the POOLED AUC read a healthy 0.716,
-    #: because a pooled AUC over objects whose base rates range from 0.04 to 0.999 rewards object
-    #: RECOGNITION. The model looked like it worked and could not rank two grasps.
+    #: What that costs is not slower convergence -- it is a DIFFERENT MODEL. Whether a grasp
+    #: works depends on the angle between the jaws and the object, i.e. on an INTERACTION
+    #: between the action and the object's pose in z. Through a single noisy draw the head
+    #: cannot resolve the pose, so it cannot form that interaction, and it converges to the only
+    #: thing that survives the noise: the per-object base success rate. The action is then
+    #: ignored outright, and within-scene ranking falls to chance while a POOLED AUC still looks
+    #: healthy, because a pooled AUC over objects with very different base rates rewards object
+    #: RECOGNITION. The model looks like it works and cannot rank two grasps.
     #:
-    #: Raising beta does not fix it (beta=300 lifts the rate 3.9 -> 11.6 nats and within-scene AUC
-    #: stays at 0.524); the information is already in the latent. Fitting a head to the FROZEN
-    #: encoder's mean recovers within-scene AUC 0.615 against an oracle ceiling of 0.685, which is
-    #: what proves the encoder was never the problem.
+    #: Raising beta does not fix it; the information is already in the latent. Fitting a head to
+    #: the FROZEN encoder's mean recovers most of the ranking, which shows the encoder was never
+    #: the problem.
     train_samples: int = 8
 
     #: Epochs over which the rate term R is annealed 0 -> 1 (KL warmup). Reaches 1.0, so the final
-    #: objective IS Eq 10. See `msp.math.bottleneck.vib_objective`.
+    #: objective IS the bottleneck loss. See `msp.math.bottleneck.vib_objective`.
     kl_warmup_epochs: int = 15
 
     #: Epochs trained with a DETERMINISTIC belief (z = mu, no posterior sampling) before the
     #: stochastic objective is switched on. This is an INITIALIZATION schedule, not a change to the
-    #: objective: after it, training is exactly Eq 10.
+    #: objective: after it, training is exactly the bottleneck loss.
     #:
     #: THE ORDER IN WHICH THINGS ARE LEARNED DECIDES WHETHER THIS MODEL WORKS AT ALL.
     #:
@@ -259,13 +257,13 @@ class Trainer:
 
     def _deterministic_now(self) -> bool:
         """True during the deterministic warmup. Validation is ALWAYS stochastic, so the reported
-        val distortion and the frontier point are the true Eq-10 quantities from the first epoch."""
+        val rate and distortion are the true objective's from the first epoch."""
         return self.encoder.training and self.epoch < self.cfg.deterministic_warmup_epochs
 
     def _rate_weight_at(self, epoch: int) -> float:
         """KL warmup: R is annealed 0 -> 1 so the head can learn to USE z before the rate term is
         allowed to push the posterior back to the prior. Validation runs at full weight, so the
-        reported frontier point is always the true Eq-10 one.
+        reported rate and distortion are always the true objective's.
 
         R is held at ZERO through the deterministic warmup. There is nothing for it to trade against
         yet -- z is not being sampled, so the rate buys no robustness -- and letting it run would

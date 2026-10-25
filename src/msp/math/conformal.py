@@ -1,10 +1,10 @@
-"""Distribution-free calibrated abstention. Contribution C4, Formalization Section 7.
+"""Distribution-free calibrated abstention: split-conformal certificates for grasp success.
 
-This module carries the framework's only *guarantee*, so it is written defensively and
+This module carries the planner's only *guarantee*, so it is written defensively and
 every failure mode is arranged to fail CLOSED (refuse to act) rather than open (act
 without a certificate).
 
-The audited implementation failed open in four independent ways, all reproduced as
+An earlier implementation failed open in four independent ways, all reproduced as
 regression tests in `tests/math/test_conformal.py`:
 
   1. It computed only score_1 = 1 - s and never score_0 = s, so it never constructed the
@@ -40,7 +40,7 @@ __all__ = [
 
 
 def nonconformity_scores(s: Tensor, succ: Tensor) -> Tensor:
-    """The split-conformal nonconformity score. Formalization Eq 22::
+    """The split-conformal nonconformity score::
 
         E(o, a, succ) =  1 - s   if succ = 1
                          s       if succ = 0
@@ -49,7 +49,7 @@ def nonconformity_scores(s: Tensor, succ: Tensor) -> Tensor:
     the standard "one minus the predicted probability of the realized label" score.
 
     Args:
-        s:    (N,) predicted success probabilities s(o, a) from Eq 13.
+        s:    (N,) predicted success probabilities s(o, a).
         succ: (N,) realized binary outcomes.
 
     Returns:
@@ -68,15 +68,15 @@ def min_calibration_size(alpha: float) -> int:
 
         ceil((n+1)(1-alpha)) <= n     <==>     n >= 1/alpha - 1
 
-    Below this, no finite q_hat can certify anything and the guarantee is vacuous. The
-    audited code clamped the level to 1.0 and carried on silently; we raise instead.
+    Below this, no finite q_hat can certify anything and the guarantee is vacuous. An
+    earlier implementation clamped the level to 1.0 and carried on silently; we raise instead.
     """
     return max(1, math.ceil(1.0 / alpha - 1.0))
 
 
 def conformal_quantile(scores: Tensor, alpha: float) -> float:
     """q_hat: the ceil((n+1)(1-alpha))-th smallest nonconformity score.
-    Formalization Eq 23, and the quantity whose validity Theorem 7 rests on.
+    The quantity the split-conformal coverage guarantee rests on.
 
     The finite-sample coverage proof needs the empirical quantile taken as an ORDER
     STATISTIC, not by interpolating between neighbouring order statistics. Interpolation
@@ -115,14 +115,14 @@ def conformal_quantile(scores: Tensor, alpha: float) -> float:
 
 
 def prediction_set(s: Tensor, q_hat: float) -> PredictionSet:
-    """Construct C(o, a) for every candidate action. Formalization Eq 23::
+    """Construct C(o, a) for every candidate action::
 
         C(o, a) = { l in {0,1} : score_l(o, a) <= q_hat },
         score_1 = 1 - s,   score_0 = s
 
     BOTH memberships are computed. The returned `PredictionSet` exposes
-    `is_certified_success()`, which is the singleton test C(o,a) == {1} of Eq 24 -- the
-    test the audited code omitted.
+    `is_certified_success()`, which is the singleton test C(o,a) == {1} -- the
+    test an earlier implementation omitted.
 
     The four possible sets and their meanings:
 
@@ -134,7 +134,7 @@ def prediction_set(s: Tensor, q_hat: float) -> PredictionSet:
                                     score exceeds q_hat for both labels
 
     Args:
-        s: (B, Na) success probabilities from Eq 13.
+        s: (B, Na) success probabilities.
         q_hat: the calibrated quantile.
 
     Returns:
@@ -148,7 +148,7 @@ def prediction_set(s: Tensor, q_hat: float) -> PredictionSet:
 
 @dataclass
 class AdaptiveConformalState:
-    """Adaptive Conformal Inference (Gibbs & Candes). Formalization Section 7::
+    """Adaptive Conformal Inference (Gibbs & Candes)::
 
         alpha_t <- alpha_t + gamma * (alpha - err_t)
 
@@ -157,7 +157,7 @@ class AdaptiveConformalState:
     distribution drift -- it does not need exchangeability -- which is what makes the
     certificate survive deployment.
 
-    THE BUG THIS TYPE EXISTS TO PREVENT. The audited code wrote::
+    THE BUG THIS TYPE EXISTS TO PREVENT. An earlier implementation wrote::
 
         self.alpha = self.alpha + self.gamma * (self.alpha - err_t)
 
@@ -168,7 +168,7 @@ class AdaptiveConformalState:
     be lost. Regression-tested in `test_aci_is_anchored_to_target`.
     """
 
-    target: float  # the fixed alpha of Theorem 7. NEVER mutated.
+    target: float  # the fixed target alpha of the coverage guarantee. NEVER mutated.
     gamma: float = 0.01  # ACI step size
     alpha_t: float = 0.0  # the online, mutating level
     _min: float = 1e-3

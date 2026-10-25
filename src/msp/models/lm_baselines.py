@@ -1,4 +1,4 @@
-"""Baselines for LM-Grasp, matched to the MSP encoder in data, crop and compute.
+"""Baselines for LM-Grasp, matched to the learned outcome scorer in data, crop and compute.
 
     PoseRegressor   ResNet-18 on the same RGB-D crop -> 6-D rotation + translation offset from
                     the visible centroid. Its pose feeds a pose-then-plan scorer that re-simulates

@@ -1,8 +1,7 @@
-"""The manipulation-sufficiency objective: Eq 7, 8, 9, 10, 11 and Theorem 3.
+"""The information-bottleneck loss of the learned outcome scorers: rate, distortion and beta.
 
-The central test here is `test_regression_beta_direction_matches_theorem_3`. It is the one
-that would have caught the inverted-beta defect, and it encodes the paper's claim directly:
-raising beta must buy sufficiency, not compression.
+The central test here is `test_regression_beta_direction`. It is the one that would have
+caught the inverted-beta defect: raising beta must buy outcome information, not compression.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ def _make_pair(b: int = 4, na: int = 6, seed: int = 0):
 
 
 # --------------------------------------------------------------------------------------
-# Eq 11 / Eq 8 -- the rate
+# The rate
 # --------------------------------------------------------------------------------------
 
 
@@ -71,7 +70,7 @@ def test_eq8_rate_matches_the_closed_form() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Eq 9 -- the distortion
+# The distortion
 # --------------------------------------------------------------------------------------
 
 
@@ -109,7 +108,7 @@ def test_eq9_distortion_is_a_proper_negative_log_likelihood() -> None:
 def test_regression_a_head_cannot_claim_absurd_precision() -> None:
     """REGRESSION -- TWO DEFECTS, ONE TEST.
 
-    (a) The audited head left logvar UNCLAMPED, so exp(-logvar) overflowed to inf and produced
+    (a) The earlier head left logvar UNCLAMPED, so exp(-logvar) overflowed to inf and produced
         NaN gradients once the head grew confident.
     (b) Clamping at logvar >= -10 fixed the overflow but still permitted a precision of
         exp(10) ~ 22,000. The head overfit the slip magnitude, was confidently wrong on held-out
@@ -178,7 +177,7 @@ def test_slip_is_zero_inflated_not_lognormal() -> None:
 
 
 def test_slip_is_modeled_on_the_nonnegative_halfline() -> None:
-    """Y constrains slip >= 0. A log-normal puts no mass on negative slip; the audited
+    """Y constrains slip >= 0. A log-normal puts no mass on negative slip; the earlier
     unconstrained Gaussian did."""
     target = Outcome(
         succ=torch.ones(1, 1, 1),
@@ -198,19 +197,19 @@ def test_slip_is_modeled_on_the_nonnegative_halfline() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Eq 7 / Eq 10 / Theorem 3 -- THE BETA DIRECTION
+# THE BETA DIRECTION
 # --------------------------------------------------------------------------------------
 
 
-def test_regression_beta_direction_matches_theorem_3() -> None:
+def test_regression_beta_direction() -> None:
     """REGRESSION -- THE INVERTED-BETA DEFECT.
 
-    Eq 7:  min I(Z;O) - beta * I(Z;Y|A).   Theorem 3: beta -> inf  ==>  SUFFICIENCY.
+    min I(Z;O) - beta * I(Z;Y|A):   beta -> inf  ==>  z keeps what predicts outcomes.
 
-    So raising beta must increase the weight the loss places on DISTORTION (relevance)
-    relative to RATE (compression). The audited code computed `L = sum_j D_j/beta_j + R`,
-    which does the exact opposite: raising beta shrank the distortion term and let the rate
-    dominate, driving the latent to total collapse.
+    So raising beta must increase the weight the loss places on DISTORTION (relevance) relative
+    to RATE (compression). An earlier implementation computed `L = sum_j D_j/beta_j + R`, which
+    does the exact opposite: raising beta shrank the distortion term and let the rate dominate,
+    driving the latent to total collapse.
 
     We assert the derivative of the loss w.r.t. the distortion grows with beta, and that the
     ratio of distortion weight to rate weight is beta itself.
@@ -226,19 +225,18 @@ def test_regression_beta_direction_matches_theorem_3() -> None:
     for beta in (0.1, 1.0, 10.0):
         terms = vib_objective(pred, target, mu, logvar, BetaSchedule.uniform(beta))
         losses[beta] = terms.loss
-        # L = beta * D + R  (per-dimension form of Eq 7 with uniform beta)
+        # L = beta * D + R  (uniform beta)
         torch.testing.assert_close(terms.loss, beta * total_d + r, atol=1e-5, rtol=1e-5)
 
     # The distortion's share of the loss must RISE with beta.
     share = {b: (b * total_d / losses[b]).item() for b in (0.1, 1.0, 10.0)}
     assert share[0.1] < share[1.0] < share[10.0], (
-        "raising beta must increase the weight on sufficiency (Theorem 3), not decrease it"
+        "raising beta must increase the weight on the outcome terms, not decrease it"
     )
 
 
 def test_beta_zero_limit_is_pure_compression() -> None:
-    """beta -> 0: the objective reduces to the rate alone -- maximal compression, zero
-    sufficiency. The mirror image of Theorem 3."""
+    """beta -> 0: the objective reduces to the rate alone -- maximal compression."""
     pred, target = _make_pair()
     mu, logvar = torch.randn(4, 8), torch.randn(4, 8) * 0.2
     terms = vib_objective(pred, target, mu, logvar, BetaSchedule.uniform(1e-8))
@@ -246,9 +244,9 @@ def test_beta_zero_limit_is_pure_compression() -> None:
 
 
 def test_per_dimension_beta_targets_the_right_outcome() -> None:
-    """Philosophy P5: a language instruction scales beta per outcome dimension, so the
-    budget must land on the dimension it names. Raising beta_slip must increase the loss's
-    sensitivity to the SLIP term and leave the others alone."""
+    """beta is set per outcome dimension, so the budget must land on the dimension it names.
+    Raising beta_slip must increase the loss's sensitivity to the SLIP term and leave the others
+    alone."""
     pred, target = _make_pair()
     mu, logvar = torch.randn(4, 8), torch.randn(4, 8) * 0.2
 
@@ -261,7 +259,7 @@ def test_per_dimension_beta_targets_the_right_outcome() -> None:
 
 
 def test_beta_must_be_positive() -> None:
-    """Eq 7 requires beta > 0."""
+    """The objective requires beta > 0."""
     with pytest.raises(ValueError, match="must be > 0"):
         BetaSchedule(succ=0.0)
     with pytest.raises(ValueError, match="must be > 0"):
@@ -287,7 +285,7 @@ def test_objective_is_differentiable_wrt_both_belief_parameters() -> None:
 
 
 def test_no_geometry_supervision_leaks_into_the_objective() -> None:
-    """The entire thesis is that supervision comes from outcomes, never from pose or shape.
+    """The scorer is supervised by outcomes only, never by pose or shape.
     `vib_objective` must depend ONLY on (pred, target, mu, logvar, beta). This test pins the
     signature so a pose loss cannot be quietly added later."""
     import inspect
@@ -295,11 +293,11 @@ def test_no_geometry_supervision_leaks_into_the_objective() -> None:
     params = set(inspect.signature(vib_objective).parameters)
     assert params == {"pred", "target", "mu", "logvar", "beta", "weights", "rate_weight"}, (
         f"vib_objective signature changed to {params}. If a geometry/pose term was added, "
-        "it contradicts the manipulation-sufficiency estimand (Section 3)."
+        "it contradicts outcome-only supervision."
     )
-    # `rate_weight` is a TRAINING SCHEDULE (KL warmup), not supervision: it scales the rate term the
-    # objective already had, carries no target, and must reach 1.0, at which point this is Eq 10
-    # exactly. It is admissible for that reason and no other -- anything here that takes a POSE or a
-    # SHAPE as an argument is not.
+    # `rate_weight` is a TRAINING SCHEDULE (KL warmup), not supervision: it scales the rate term
+    # the objective already had, carries no target, and must reach 1.0, at which point this is
+    # the objective exactly. It is admissible for that reason and no other -- anything here that
+    # takes a POSE or a SHAPE as an argument is not.
     for banned in ("pose", "shape", "geometry", "state", "x_true", "mesh", "depth"):
         assert banned not in params, f"vib_objective must never see {banned!r}"
