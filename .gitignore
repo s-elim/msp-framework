@@ -15,7 +15,7 @@ wandb/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-data/corpus/
+data/
 *.pt
 
 # Third-party baselines are CLONED, never vendored. AnyDexGrasp is CC BY-NC 4.0; committing it
@@ -34,3 +34,6 @@ scientific_reports_paper/main.blg
 scientific_reports_paper/main.log
 scientific_reports_paper/main.out
 scientific_reports_paper/overleaf_scireports_*/
+
+# FoundationPose is cloned with its weights (baselines/README.md), never vendored
+FoundationPose/
