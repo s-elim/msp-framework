@@ -224,6 +224,7 @@ class LinemodGraspSim:
                             geoms=geoms, ph=self.g.palm_half, fh=self.g.finger_half,
                             ho=self.g.half_opening, fz=self.g.finger_offset_z,
                             gf=self.g.grip_force)
+        self.xml = xml  # kept so figures can build a lit twin with the same qpos layout
         self.model = mujoco.MjModel.from_xml_string(xml)
         m = self.model
         self._oa = m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "obj")]
@@ -286,12 +287,28 @@ class LinemodGraspSim:
 
     # -- one grasp -------------------------------------------------------------------------
 
-    def rollout(self, T_obj_tcp: np.ndarray, p: PhysParams) -> tuple[float, float, bool]:
+    def rollout(self, T_obj_tcp: np.ndarray, p: PhysParams,
+                trace: list[np.ndarray] | None = None,
+                trace_every: int = 0) -> tuple[float, float, bool]:
         """Execute one grasp given as a TCP pose in the OBJECT frame.
 
         Returns (success, slip [m], executable). A grasp whose open jaws already intersect the
-        object or the table is not executable and counts as a failure.
+        object or the table is not executable and counts as a failure. If `trace` is given, it
+        receives qpos (nq,) after placing the open hand, then after closing and after the
+        lift, or, with `trace_every` > 0, after every `trace_every`-th physics step instead
+        (for videos). A non-executable grasp gives only the first entry. The outcome is
+        unchanged either way.
         """
+        dense = trace if trace is not None and trace_every > 0 else None
+        n_steps = 0
+
+        def step() -> None:
+            nonlocal n_steps
+            mujoco.mj_step(m, d)
+            n_steps += 1
+            if dense is not None and n_steps % trace_every == 0:
+                dense.append(d.qpos.copy())
+
         rest_pos, rest_q = self.rest_pose(p)
         self._apply_phys(p)
         m = self.model
@@ -309,23 +326,29 @@ class LinemodGraspSim:
         d.mocap_pos[0] = hand_pos
         d.mocap_quat[0] = hq
         mujoco.mj_forward(m, d)
+        if trace is not None:
+            trace.append(d.qpos.copy())
         for i in range(d.ncon):
             c = d.contact[i]
             if c.geom1 in self._hand_ids or c.geom2 in self._hand_ids:
                 return 0.0, 0.0, False
 
         for _ in range(20):
-            mujoco.mj_step(m, d)
+            step()
         d.ctrl[:] = [self.g.half_opening, self.g.half_opening]
         for _ in range(self.s.close_steps + self.s.hold_steps):
-            mujoco.mj_step(m, d)
+            step()
+        if trace is not None and dense is None:
+            trace.append(d.qpos.copy())
         grasped = d.qpos[oa:oa + 3].copy()
         hand0 = d.qpos[ha:ha + 3].copy()
         z0 = d.mocap_pos[0][2]
         dz = self.s.lift_speed * self.s.timestep
         for i in range(self.s.lift_steps):
             d.mocap_pos[0][2] = min(z0 + dz * i, z0 + self.s.lift_height)
-            mujoco.mj_step(m, d)
+            step()
+        if trace is not None and dense is None:
+            trace.append(d.qpos.copy())
         final = d.qpos[oa:oa + 3].copy()
         success = float(final[2] > rest_pos[2] + self.s.success_height)
         travel = d.qpos[ha:ha + 3] - hand0

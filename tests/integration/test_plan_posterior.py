@@ -41,3 +41,31 @@ def test_one_identity_sample_equals_the_point_estimate_planner():
     # executability as the corpus builder for the nominal physics draw
     exe = np.array([sim.rollout(T, phys[0])[2] for T in T_obj])
     assert np.array_equal(post.exe[0, 0], exe)
+
+
+def test_rollout_trace_leaves_the_outcome_unchanged():
+    from msp.data.linemod import crop_observation, index_lm, object_frame, propose_grasps
+    from msp.oracle.linemod_sim import LinemodGraspSim, decompose_lm_models
+
+    sim = LinemodGraspSim(decompose_lm_models(LM, CACHE, obj_ids=(1,))[0])
+    e = index_lm(LM, (1,))[0]
+    ob = crop_observation(LM, e)
+    prop = propose_grasps(ob["points"], ob["c"], 8, np.random.default_rng([0, 1, e.im_id]),
+                          n_table=ob["n_table"], h_table=float(ob["h_table"]))
+    p = sim.nominal_phys()
+    rest = sim.rest_pose(p)[0]
+    for T in object_frame(prop.T, e.R, e.t):
+        trace: list[np.ndarray] = []
+        succ, slip, exe = sim.rollout(T, p, trace=trace)
+        assert (succ, slip, exe) == sim.rollout(T, p)
+        assert len(trace) == (3 if exe else 1)
+        assert all(q.shape == (sim.model.nq,) for q in trace)
+        if exe:  # the last state is the one the success test reads
+            lifted = trace[-1][sim._oa + 2] > rest[2] + sim.s.success_height
+            assert bool(lifted) == bool(succ)
+        dense: list[np.ndarray] = []
+        assert sim.rollout(T, p, trace=dense, trace_every=50) == (succ, slip, exe)
+        n_steps = 20 + sim.s.close_steps + sim.s.hold_steps + sim.s.lift_steps
+        assert len(dense) == (1 + n_steps // 50 if exe else 1)
+        if exe and n_steps % 50 == 0:
+            assert np.array_equal(dense[-1], trace[-1])
