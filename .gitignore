@@ -26,14 +26,7 @@ baselines/*/
 # Slurm/build logs from baseline setup
 baselines/*.log
 
-# compiled manuscript (regenerate with tectonic)
-scientific_reports_paper/main.pdf
-scientific_reports_paper/main.aux
-scientific_reports_paper/main.bbl
-scientific_reports_paper/main.blg
-scientific_reports_paper/main.log
-scientific_reports_paper/main.out
-scientific_reports_paper/overleaf_scireports_*/
+scientific_reports_paper/
 
 # FoundationPose is cloned with its weights (baselines/README.md), never vendored
 FoundationPose/
